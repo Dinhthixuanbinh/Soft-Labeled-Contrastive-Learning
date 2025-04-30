@@ -1,3 +1,4 @@
+# %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer_baseline.py
 from datetime import datetime
 import os
 import numpy as np
@@ -69,7 +70,8 @@ class Trainer_baseline(Trainer):
             print('importing raw data...')
             if self.args.raw:
                 from pathlib import Path
-                self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_DA-master'))
+                print(f"DEBUG: self.args.data_dir being passed to prepare_dataset_mmwhs_raw is: {self.args.data_dir}")
+                self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_mmwhs'))
                 self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs_raw(self.args)
             else:
                 self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs(self.args)
