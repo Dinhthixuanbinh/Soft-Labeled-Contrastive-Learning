@@ -16,7 +16,7 @@ from dataset.data_generator_mscmrseg import ImageProcessor
 
 class DataGenerator(data.Dataset):
     def __init__(self, phase="train", modality="ct", crop_size=224, n_samples=-1, augmentation=False,
-                 data_dir='../data/mscmrseg/mmwhs/CT_MR_2D_Dataset_DA-master', bs=16, domain='s',
+                 data_dir='/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs', bs=16, domain='s',
                  aug_mode='simple', aug_counter=False, normalization='minmax', fold=0, vert=False, split=0,
                  val_num=0, M3ASdata=True, zoom=1, percent=100):
         assert modality == "ct" or modality == "mr"

@@ -20,8 +20,8 @@ POWER = 0.9
 RANDOM_SEED = 1234
 
 INPUT_SIZE = 224
-DATA_DIRECTORY = "../../data/mscmrseg/origin"
-RAW_DATA_DIRECTORY = "../../data/mscmrseg/raw_data"
+DATA_DIRECTORY = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
+RAW_DATA_DIRECTORY = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
 EPOCHS = 40
 WARMUP_EPOCHS = EPOCHS
 EPS_ITERS = 5

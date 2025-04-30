@@ -1,3 +1,4 @@
+# %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/utils/utils_.py
 from torch.nn import init
 import torch
 from torch.nn import functional as F
@@ -1050,7 +1051,7 @@ def generate_train_test_split():
 
 def check_mask_with_label():
     for i in range(1001, 1021):
-        mask = nib.load(f'F:\data\mmwhs/affregcommon2mm_roi_mr_train/roi_mr_train_{i}_label.nii.gz').get_fdata()
+        mask = nib.load(f'F:\data\mmwhs/affregcommon2mm_roi_mr_train/roi_mr_train_{i}_label.nii').get_fdata()
         mask = (mask == 205) * 1 + (mask == 500) * 2 + (mask == 600) * 3
         tmp1 = np.unique(np.where(mask == 1)[1])
         tmp2 = np.unique(np.where(mask == 2)[1])
@@ -1060,6 +1061,14 @@ def check_mask_with_label():
 
 
 def load_raw_data_mmwhs(img_path, mask_path=None):
+    print(f"DEBUG: Worker attempting to read file: {img_path}")
+
+    try:
+        img = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
+    except RuntimeError as e:
+        # Bắt lỗi SimpleITK để in ra thông tin chi tiết hơn nếu cần
+        print(f"ERROR: SimpleITK failed to read {img_path}. Error: {e}")
+        raise
     img = sitk.GetArrayFromImage(sitk.ReadImage(img_path))
     img = np.pad(img[:, 8: -8, 0], ((2, 2), (0, 0)), constant_values=img.min())
     if mask_path is not None:
@@ -1135,7 +1144,7 @@ def load_mnmx_csv(modality, percent=100):
     elif percent == 99.99:
         mnmx = pd.read_csv(f'{modality.upper()}minmax99.99.csv', index_col=0)
     elif percent == 100:
-        mnmx = pd.read_csv(f'{modality.upper()}minmax100.csv', index_col=0)
+        mnmx = pd.read_csv(f'/kaggle/input/ctminmax100-csv/CTminmax100.csv', index_col=0)
     else:
         raise NotImplementedError(f"{sys._getframe(  ).f_code.co_name}, variable 'percent' out of expectation.")
     return mnmx

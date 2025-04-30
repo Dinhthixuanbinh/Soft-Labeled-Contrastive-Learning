@@ -99,7 +99,7 @@ class Trainer(ABC):
         self.parser.add_argument('-epochs', type=int, default=config.EPOCHS)
         """weight directory"""
         self.parser.add_argument('-vgg', help='the path to the directory of the weight', type=str,
-                                 default='pretrained/vgg_normalised.pth')
+                                 default='/kaggle/input/vgg-normalised/vgg_normalised.pth')
         """stylized image"""
         self.parser.add_argument('-style_dir', type=str, default='./style_track')
         self.parser.add_argument('-save_every_epochs', type=int, default=config.SAVE_PRED_EVERY,

@@ -49,9 +49,9 @@ class Pretrainer_RAIN(Trainer_baseline):
     @timer.timeit
     def prepare_model(self):
         if self.args.restore:
-            decoder_model_dir = 'weights/decoder.{}.pt'.format(self.apdx)
-            fc_encoder_dir = 'weights/fc_encoder.{}.pt'.format(self.apdx)
-            fc_decoder_dir = 'weights/fc_decoder.{}.pt'.format(self.apdx)
+            decoder_model_dir = '/kaggle/input/pretrained-model/best_decoder.bssfp2t2.lr0.0001.sw5.0.cw5.0.lw1.0.rw5.0.aug.e200.Scr7.691.pt'.format(self.apdx)
+            fc_encoder_dir = '/kaggle/input/pretrained-model/best_fc_encoder.bssfp2t2.lr0.0001.sw5.0.cw5.0.lw1.0.rw5.0.aug.e200.Scr7.691.pt'.format(self.apdx)
+            fc_decoder_dir = '/kaggle/input/pretrained-model/best_fc_decoder.bssfp2t2.lr0.0001.sw5.0.cw5.0.lw1.0.rw5.0.aug.e200.Scr7.691.pt'.format(self.apdx)
             self.start_epoch = torch.load(decoder_model_dir)['epoch']
         else:
             decoder_model_dir, fc_encoder_dir, fc_decoder_dir = None, None, None
