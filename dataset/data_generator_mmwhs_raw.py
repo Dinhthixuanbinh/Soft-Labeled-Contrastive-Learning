@@ -42,8 +42,8 @@ class DataGenerator(data.Dataset):
         if M3ASdata:
             parent_fold = os.path.join(data_dir, f'{modality.upper()}_woGT')
             for num in num_dict[domain][modality.upper()]:
-                self._image_files += [os.path.join(parent_fold, f'img{num}_slice{slc_num}.nii.gz') for slc_num in range(1, 17)]
-                self._mask_files += [os.path.join(parent_fold, f'lab{num}_slice{slc_num}.nii.gz') for slc_num in range(1, 17)]
+                self._image_files += [os.path.join(parent_fold, f'img{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
+                self._mask_files += [os.path.join(parent_fold, f'lab{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
                 if vert:
                     self._vert_files += [os.path.join(data_dir, f'vert{modality.upper()}/lab{num}_slice{slc_num}.npy') for slc_num in range(1, 17)]
         if domain == 't':
@@ -58,8 +58,8 @@ class DataGenerator(data.Dataset):
             train_extra += 32
         parent_fold = os.path.join(data_dir, f'{modality.upper()}_withGT')
         for num in train_extra:
-            self._image_files += [os.path.join(parent_fold, f'img{num}_slice{slc_num}.nii.gz') for slc_num in range(1, 17)]
-            self._mask_files += [os.path.join(parent_fold, f'lab{num}_slice{slc_num}.nii.gz') for slc_num in range(1, 17)]
+            self._image_files += [os.path.join(parent_fold, f'img{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
+            self._mask_files += [os.path.join(parent_fold, f'lab{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
             if vert:
                 self._vert_files += [os.path.join(data_dir, f'vert{modality.upper()}/lab{num}_slice{slc_num}.npy') for slc_num in range(1, 17)]
         assert len(self._image_files) == len(self._mask_files) and \
