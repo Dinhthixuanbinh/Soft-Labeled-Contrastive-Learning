@@ -152,7 +152,7 @@ class Trainer_MCCL(Trainer_RAIN):
             print('importing raw data...')
             if self.args.raw:
                 from pathlib import Path
-                self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_DA-master'))
+                self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_mmwhs'))
                 self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs_raw(
                     self.args,
                     aug_counter=True)
