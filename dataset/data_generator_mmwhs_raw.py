@@ -1,222 +1,184 @@
-# %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer.py
-import torch.backends.cudnn as cudnn
-import torch
+import os.path
+from pathlib import Path
+import math
 
-from abc import ABC, abstractmethod
-from datetime import datetime, timedelta
-import os
-import argparse
-import random
 import numpy as np
+from torch.utils import data
+import re
+import SimpleITK as sitk
+import elasticdeform
+import pandas as pd
 
-from utils.utils_ import get_device, check_bit_generator, print_device_info, get_summarywriter
 import config
-from evaluator import Evaluator
+from utils.utils_ import tranfer_data_2_scratch, load_raw_data_mmwhs, load_mnmx_csv, assert_match
+from dataset.data_generator_mscmrseg import ImageProcessor
 
 
-class Trainer(ABC):
-    def __init__(self):
-        self.start_time = datetime.now()
-        self.max_epoch_time = 0
-        self.start_epoch = 0
-        self.max_duration = 24 * 3600 - 5 * 60
-        self.device = get_device()
-        self.prepare_grocery()
-        self.cores = os.cpu_count()
+class DataGenerator(data.Dataset):
+    def __init__(self, phase="train", modality="ct", crop_size=224, n_samples=-1, augmentation=False,
+                 data_dir='/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs', bs=16, domain='s',
+                 aug_mode='simple', aug_counter=False, normalization='minmax', fold=0, vert=False, split=0,
+                 val_num=0, M3ASdata=True, zoom=1, percent=100):
+        assert modality == "ct" or modality == "mr"
+        self._modality = modality
+        self._crop_size = crop_size
+        self._phase = phase
+        self._index = 0  # start from the 0th sample
+        self._totalcount = 0
+        self._augmentation = augmentation
+        self._aug_mode = aug_mode
+        self._aug_counter = aug_counter
+        self._normalization = normalization
+        self._image_files, self._mask_files, self._vert_files = [], [], []
+        self._vert = vert
+        self._zoom = zoom
+        self._percent = percent
+        self._mnmx = load_mnmx_csv(modality, percent)
 
-        self.get_argparser()
-        self.get_arguments_apdx()
-        self.args.num_workers = min(self.cores, self.args.bs) if self.args.num_workers == -1 else self.args.num_workers
-        self.prepare_dataloader()
-        self.prepare_model()
-        self.prepare_optimizers()
-        self.prepare_checkpoints()
-        self.prepare_losses()
-        random.seed(self.args.seed)
-        np.random.seed(self.args.seed)
-        torch.manual_seed(self.args.seed)
-        torch.cuda.manual_seed(self.args.seed)
-        self.writer, self.log_dir = get_summarywriter(self.apdx)
-        """create the evaluator"""
-        self.evaluator = Evaluator(data_dir=self.scratch, raw_data_dir=self.scratch_raw, raw=self.args.raw,
-                                   normalization=self.args.normalization, dataset=self.dataset)
-
-    def get_argparser(self):
-        # Basic options
-        self.parser = argparse.ArgumentParser()
-        self.parser.add_argument('-apdx', type=str, default='')
-        """training configuration"""
-        self.parser.add_argument('-evalT', action='store_true')
-        self.parser.add_argument('-val_num', type=int, default=0)
-        """dataset configuration"""
-        self.parser.add_argument('-spacing', help='pixel spacing of the mmwhs dataset', type=float, default=1)
-        self.parser.add_argument('-noM3AS', action='store_false')
-        self.parser.add_argument('-data_dir', type=str, default=config.DATA_DIRECTORY)
-        self.parser.add_argument("-raw_data_dir", type=str, default=config.RAW_DATA_DIRECTORY,
-                                 help="Path to the directory containing the source dataset.")
-        self.parser.add_argument('-rev', action='store_true')
-        self.parser.add_argument('-fold', type=int, help='fold number. Only for MMWHS dataset.', default=0)
-        self.parser.add_argument('-split', type=int, help='split set', default=0)
-        self.parser.add_argument('-scratch', action='store_true')
-        self.parser.add_argument('-bs', type=int, default=config.BATCH_SIZE)
-        self.parser.add_argument('-crop', type=int, default=config.INPUT_SIZE)
-        self.parser.add_argument('-aug_s', action='store_true')
-        self.parser.add_argument('-aug_t', action='store_true')
-        self.parser.add_argument('-aug_mode', type=str, default='simple')
-        self.parser.add_argument('-pin_memory', action='store_true')
-        self.parser.add_argument('-num_workers', type=int, default=-1)
-        self.parser.add_argument('-normalization', type=str, default='minmax')
-        self.parser.add_argument('-clahe', action='store_true')
-        self.parser.add_argument("-raw", action='store_true')
-        self.parser.add_argument("-percent", type=float, default=100)
-        self.parser.add_argument("-save_data", action='store_true')
-        """model configuration"""
-        self.parser.add_argument("-backbone", help='the model for training.', type=str, default='drunet')
-        self.parser.add_argument("-pretrained", action='store_true',
-                                 help="whether the loaded model is pretrained (the epoch number will not be loaded if True).")
-        self.parser.add_argument("-restore_from", type=str, default=None,
-                                 help="Where restore model parameters from (the epoch number will be loaded).")
-        self.parser.add_argument("-num_classes", type=int, default=config.NUM_CLASSES,
-                                 help="Number of classes to predict (including background).")
-        self.parser.add_argument("-nb", type=int, default=4,
-                                 help="Number of blocks.")
-        self.parser.add_argument("-bd", type=int, default=4,
-                                 help="Bottleneck depth.")
-        self.parser.add_argument("-filters", type=int, default=32,
-                                 help="Number of filters for the first layer.")
-        """optimization options"""
-        self.parser.add_argument('-optim', help='The optimizer.', type=str, default='sgd')
-        self.parser.add_argument('-lr_decay_method', type=str, default=None)
-        self.parser.add_argument('-lr', type=float, default=config.LEARNING_RATE)
-        self.parser.add_argument('-lr_decay', type=float, default=config.LEARNING_RATE_DECAY)
-        self.parser.add_argument('-lr_end', help='the minimum LR when using polynomial decay', type=float, default=0)
-        self.parser.add_argument("-momentum", type=float, default=config.MOMENTUM,
-                                 help="Momentum component of the optimiser.")
-        self.parser.add_argument("-power", type=float, default=config.POWER,
-                                 help="Decay parameter to compute the learning rate.")
-        self.parser.add_argument("-weight_decay", type=float, default=config.WEIGHT_DECAY,
-                                 help="Regularisation parameter for L2-loss.")
-        # parser.add_argument('-ns', type=int, default=700)
-        self.parser.add_argument('-epochs', type=int, default=config.EPOCHS)
-        """weight directory"""
-        self.parser.add_argument('-vgg', help='the path to the directory of the weight', type=str,
-                                 default='/kaggle/input/vgg-normalised/vgg_normalised.pth')
-        """stylized image"""
-        self.parser.add_argument('-style_dir', type=str, default='./style_track')
-        self.parser.add_argument('-save_every_epochs', type=int, default=config.SAVE_PRED_EVERY,
-                                 help='save the stylized images and checkpoint for every certain epochs')
-        """miscellaneous"""
-        self.parser.add_argument("-seed", type=int, default=config.RANDOM_SEED,
-                                 help="Random seed to have reproducible results.")
-        self.add_additional_arguments()
-        self.args = self.parser.parse_args()
-        self.args.raw = True
-        del self.parser
-        self.args.spacing = .5 if 'DDFSeg' in self.args.data_dir else 1
-        if 'mscmrseg' in self.args.data_dir:
-            self.dataset = 'mscmrseg'
-            self.trgt_modality = 'bssfp' if self.args.rev else 'lge'
-            self.src_modality = 'lge' if self.args.rev else 'bssfp'
-        elif 'mmwhs' in self.args.data_dir:
-            self.dataset = 'mmwhs'
-            self.trgt_modality = 'ct' if self.args.rev else 'mr'
-            self.src_modality = 'ct' if not self.args.rev else 'mr'
+        num_dict = {'t': {'CT': np.setdiff1d(config.MMWHS_CT_S_TRAIN_SET, config.MMWHS_CT_T_VALID_SET),
+                          'MR': np.setdiff1d(config.MMWHS_MR_S_TRAIN_SET, config.MMWHS_MR_T_VALID_SET if val_num == 0
+                          else config.MMWHS_MR_T_VALID_SET1)},
+                    's': {'CT': config.MMWHS_CT_S_TRAIN_SET, 'MR': config.MMWHS_MR_S_TRAIN_SET}}
+        if M3ASdata:
+            parent_fold = os.path.join(data_dir, f'{modality.upper()}_woGT')
+            for num in num_dict[domain][modality.upper()]:
+                self._image_files += [os.path.join(parent_fold, f'img{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
+                self._mask_files += [os.path.join(parent_fold, f'lab{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
+                if vert:
+                    self._vert_files += [os.path.join(data_dir, f'vert{modality.upper()}/lab{num}_slice{slc_num}.npy') for slc_num in range(1, 17)]
+        if domain == 't':
+             train_extra = config.train_extra_list[split][fold]
+        elif domain == 's':
+            train_extra = config.train_extra_list[split][0] + config.train_extra_list[split][1]
         else:
             raise NotImplementedError
+        print(f'domain {domain}, extra training samples: {np.sort(train_extra)}')
+        train_extra = np.array(train_extra, dtype=int)
+        if modality == 'ct':
+            train_extra += 32
+        parent_fold = os.path.join(data_dir, f'{modality.upper()}_withGT')
+        for num in train_extra:
+            self._image_files += [os.path.join(parent_fold, f'img{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
+            self._mask_files += [os.path.join(parent_fold, f'lab{num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
+            if vert:
+                self._vert_files += [os.path.join(data_dir, f'vert{modality.upper()}/lab{num}_slice{slc_num}.npy') for slc_num in range(1, 17)]
+        assert len(self._image_files) == len(self._mask_files) and \
+               len(self._image_files) > 0, f'data dir: {data_dir}, img file len: {len(self._image_files)}, ' \
+                                           f'mask file len: {len(self._mask_files)}'
+        self._len = len(self._image_files)
+        print("{}: {}".format(modality, self._len))
+        # self._shuffle_indices = np.arange(self._len)
+        # self._shuffle_indices = np.random.permutation(self._shuffle_indices)
+        if n_samples == -1:
+            self._n_samples = self._len + self._len % bs
+        else:
+            self._n_samples = n_samples
+        self._names = [Path(file).stem.split('.')[0] for file in self._image_files]
 
-    @abstractmethod
-    def add_additional_arguments(self):
-        pass
+    def __len__(self):
+        return self._n_samples
 
-    def get_basic_arguments_apdx(self, name):
-        self.apdx = f"{name}.{self.dataset}.s{self.args.split}.f{self.args.fold}.v{self.args.val_num}.{self.args.backbone}"
-        if not self.args.noM3AS:
-            self.apdx += '.noM3AS'
-        if self.args.apdx != '':
-            self.apdx += f'.{self.args.apdx}'
-        if self.args.backbone == 'drunet':
-            self.apdx += f".{self.args.filters}.nb{self.args.nb}.bd{self.args.bd}"
-        if self.args.clahe:
-            self.apdx += '.clahe'
-        self.apdx += f'.lr{self.args.lr}'
-        if self.args.lr_decay_method is not None:
-            self.apdx += f'.{self.args.lr_decay_method}'
-            if self.args.lr_decay_method == 'linear':
-                self.apdx += f'.decay{self.args.lr_decay}'
-            if self.args.lr_decay_method == 'poly':
-                self.apdx += f'.power{self.args.power}'
-        if self.args.optim == 'sgd':
-            self.apdx += f'.mmt{self.args.momentum}'
-        if 'DDFSeg' in self.args.data_dir:
-            self.apdx += '.res.5'
-        if self.args.raw:
-            self.apdx += '.raw'
-            if self.args.percent != 100:
-                self.apdx += f'.pct{self.args.percent}'
-        if self.args.aug_s or self.args.aug_t:
-            self.apdx += '.aug'
-            if self.args.aug_s:
-                self.apdx += 's'
-            if self.args.aug_t:
-                self.apdx += 't'
-            if self.args.aug_mode == 'simple':
-                self.apdx += 'Sim'
-            elif '2' in self.args.aug_mode:
-                self.apdx += 'Hvy2'
+    @property
+    def n_samples(self):
+        return self._n_samples
+
+    @n_samples.setter
+    def n_samples(self, value):
+        self._n_samples = value
+
+    def __getitem__(self, index):
+        i = index % self._len
+        assert_match(self._image_files[i], self._mask_files[i])
+        img, mask = load_raw_data_mmwhs(self._image_files[i], self._mask_files[i])
+        m = re.search('img\d+_', self._image_files[i])
+        img_name = m.group()[:-1]
+        vmin, vmax = self._mnmx.loc[img_name].min99, self._mnmx.loc[img_name].max99
+        img = np.clip((np.array(img, np.float32) - vmin) / (vmax - vmin), 0, 1)
+        aug_img, aug_mask = img, mask
+        if self._augmentation:
+            aug_mask = np.expand_dims(aug_mask, axis=-1)
+            if self._aug_mode == 'simple':
+                aug_img, aug_mask = ImageProcessor.simple_aug(image=aug_img, mask=aug_mask)
             else:
-                self.apdx += 'Hvy'
+                aug_img, aug_mask = ImageProcessor.heavy_aug(image=aug_img, mask=aug_mask, vmax=1, aug_mode=self._aug_mode)
+                if np.random.uniform(0, 1) < .5:
+                    [aug_img, aug_mask] = elasticdeform.deform_random_grid([aug_img, aug_mask], axis=[(0, 1), (0, 1)],
+                                                                           sigma=np.random.uniform(1, 7), order=0,
+                                                                           mode='constant')
+            aug_mask = aug_mask[..., 0]
+        aug_img = np.stack([aug_img, aug_img, aug_img], axis=0)
+        if self._normalization == 'zscore':
+            # idx = np.where(aug_img != 0)
+            # mean, std = aug_img[idx].mean(), aug_img[idx].std()
+            mean, std = aug_img.mean(), aug_img.std()
+            aug_img = (np.array(aug_img, np.float32) - mean) / std
+        if self._vert:
+            vertices = np.load(self._vert_files[i])
+            return aug_img, aug_mask, vertices
+        if self._aug_counter:
+            if self._augmentation:
+                mask = np.expand_dims(mask, axis=-1)
+                if self._aug_mode == 'simple':
+                    img, _ = ImageProcessor.simple_aug(image=img, mask=mask)
+                else:
+                    img, _ = ImageProcessor.heavy_aug(image=img, mask=mask, vmax=1, aug_mode=self._aug_mode)
+            img = np.stack([img, img, img], axis=0)
+            if self._normalization == 'zscore':
+                mean, std = img.mean(), img.std()
+                img = (np.array(img, np.float32) - mean) / std
+            return aug_img, img, self._names[i]  # (3, 256, 256) (4, 256, 256)
+        else:
+            return aug_img, aug_mask, self._names[i]
 
-    @abstractmethod
-    def get_arguments_apdx(self):
-        self.apdx = ''
 
-    @abstractmethod
-    def prepare_model(self):
-        pass
+def prepare_dataset(args, aug_counter=False, vert=False):
+    scratch = tranfer_data_2_scratch(args.data_dir, args.scratch)
+    content_dataset = DataGenerator(modality='mr' if args.rev else 'ct', crop_size=args.crop,
+                                    augmentation=args.aug_s, data_dir=scratch, bs=args.bs,
+                                    aug_mode=args.aug_mode, normalization=args.normalization,
+                                    aug_counter=aug_counter if args.rev else False, fold=args.fold, domain='s',
+                                    vert=vert, split=args.split, val_num=args.val_num, percent=args.percent)
+    style_dataset = DataGenerator(modality='ct' if args.rev else 'mr', crop_size=args.crop,
+                                  augmentation=args.aug_t, data_dir=scratch, bs=args.bs,
+                                  aug_mode=args.aug_mode, normalization=args.normalization,
+                                  aug_counter=False if args.rev else aug_counter, fold=args.fold, domain='t',
+                                  vert=vert, split=args.split, val_num=args.val_num, M3ASdata=args.noM3AS, percent=args.percent)
+    n_samples = int(
+        math.ceil(max(content_dataset.n_samples, style_dataset.n_samples) / args.bs) * args.bs)
+    content_dataset.n_samples = n_samples
+    style_dataset.n_samples = n_samples
+    content_loader = data.DataLoader(content_dataset, batch_size=args.bs, shuffle=True,
+                                          num_workers=args.num_workers,
+                                          pin_memory=args.pin_memory)
+    print('content dataloader created.')
+    style_loader = data.DataLoader(style_dataset, batch_size=args.bs, shuffle=True,
+                                        num_workers=args.num_workers,
+                                        pin_memory=args.pin_memory)
+    print('style dataloader created.')
+    return scratch, None, content_loader, style_loader
 
-    @abstractmethod
-    def prepare_optimizers(self):
-        pass
 
-    @abstractmethod
-    def prepare_checkpoints(self, **kwargs):
-        pass
+if __name__ == "__main__":
 
-    @abstractmethod
-    def prepare_dataloader(self):
-        pass
+    def getcolormap():
+        from matplotlib.colors import ListedColormap
+        colorlist = np.round(
+            np.array([[0, 0, 0], [186, 137, 120], [124, 121, 174], [240, 216, 152], [148, 184, 216]]) / 256, decimals=2)
+        mycolormap = ListedColormap(colors=colorlist, name='mycolor', N=5)
+        return mycolormap
 
-    def prepare_grocery(self):
-        check_bit_generator()
-        print_device_info()
-        cudnn.benchmark = True
-        cudnn.enabled = True
-        torch.autograd.set_detect_anomaly(True)
 
-    @abstractmethod
-    def train_epoch(self, **kwargs):
-        pass
-
-    @abstractmethod
-    def train(self, **kwargs):
-        pass
-
-    def check_time_elapsed(self, epoch, epoch_start, margin=30 * 60):
-        epoch_time_elapsed = datetime.now() - epoch_start
-        print(f'Epoch {epoch + 1} time elapsed: {epoch_time_elapsed}')
-        self.max_epoch_time = max(epoch_time_elapsed.seconds, self.max_epoch_time)
-        if (datetime.now() - self.start_time).seconds > self.max_duration - self.max_epoch_time - margin:
-            print("training time elapsed: {}".format(datetime.now() - self.start_time))
-            print("max_epoch_time: {}".format(timedelta(seconds=self.max_epoch_time)))
-            return True
-        return False
-
-    def prepare_losses(self):
-        pass
-
-    def stop_training(self, *args):
-        pass
-
-    @abstractmethod
-    def eval(self, phase='valid'):
+    import matplotlib.pyplot as plt
+    bssfp_generator = DataGenerator(phase='train', modality='bssfp', crop_size=224, n_samples=1000, augmentation=True,
+                                    data_dir='F:/data/mscmrseg/origin')
+    for img, msk in bssfp_generator:
+        print(img.shape, msk.shape)
+        print(img.min(), img.max())
+        print(np.argmax(msk, axis=-3).min(), np.argmax(msk, axis=-3).max())
+        f, plots = plt.subplots(1, 2)
+        plots[0].axis('off')
+        plots[1].axis('off')
+        plots[0].imshow(img[1], cmap='gray')
+        plots[1].imshow(np.argmax(msk, axis=0), cmap=getcolormap(), vmin=0, vmax=3)
+        plt.show()
         pass

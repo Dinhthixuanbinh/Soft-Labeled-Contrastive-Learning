@@ -25,6 +25,7 @@ class Trainer(ABC):
 
         self.get_argparser()
         self.get_arguments_apdx()
+
         self.args.num_workers = min(self.cores, self.args.bs) if self.args.num_workers == -1 else self.args.num_workers
         self.prepare_dataloader()
         self.prepare_model()
@@ -109,6 +110,7 @@ class Trainer(ABC):
                                  help="Random seed to have reproducible results.")
         self.add_additional_arguments()
         self.args = self.parser.parse_args()
+        self.args.raw = True
         del self.parser
         self.args.spacing = .5 if 'DDFSeg' in self.args.data_dir else 1
         if 'mscmrseg' in self.args.data_dir:
