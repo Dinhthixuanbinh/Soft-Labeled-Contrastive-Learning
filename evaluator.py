@@ -127,7 +127,7 @@ class Evaluator:
             else:
                 raise ValueError('modality can only be \'bssfp\' or \'lge\'')
 
-            mask_path = os.path.join(self._raw_data_dir, 'labels/patient{}_{}_manual.nii.gz'.format(pat_id, folder))
+            mask_path = os.path.join(self._raw_data_dir, 'labels/patient{}_{}_manual.nii'.format(pat_id, folder))
             nimg = sitk.ReadImage(mask_path)
             spacing = nimg.GetSpacing()
             nimg = sitk.GetArrayFromImage(nimg)
@@ -451,11 +451,11 @@ class Evaluator:
             if self._raw:
                 parent_fold = os.path.join(self._data_dir, f'{modality.upper()}_{"woGT" if phase == "valid" else "withGT"}')
                 print(f'parent folder: {parent_fold}')
-                suffix = 'nii.gz'
+                suffix = 'nii'
             else:
                 parent_fold = os.path.join(self._data_dir, f'{modality.upper()}_{"train" if phase == "valid" else phase}')
                 suffix = 'png'
-            masks_fold = str(Path(self._data_dir).parent.joinpath(f'CT_MR_2D_Dataset_DA-master/{modality.upper()}_{"woGT" if phase == "valid" else "withGT"}'))
+            masks_fold = str(Path(self._data_dir).parent.joinpath(f'CT_MR_2D_Dataset_mmwhs/{modality.upper()}_{"woGT" if phase == "valid" else "withGT"}'))
             img_paths_list, mask_paths_list = [], []
             preds = []
             masks = []
@@ -463,7 +463,7 @@ class Evaluator:
                 x_batch = []
                 # construct the lists of image paths and mask paths
                 img_paths = [os.path.join(parent_fold, f'img{sample_num}_slice{slc_num}.{suffix}') for slc_num in range(1, 17)]
-                mask_paths = [os.path.join(masks_fold, f'lab{sample_num}_slice{slc_num}.nii.gz') for slc_num in range(1, 17)]
+                mask_paths = [os.path.join(masks_fold, f'lab{sample_num}_slice{slc_num}.nii') for slc_num in range(1, 17)]
                 assert len(img_paths) == 16 and len(mask_paths) == 16
                 img_paths_list += img_paths
                 mask_paths_list += mask_paths
