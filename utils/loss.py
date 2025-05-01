@@ -19,8 +19,9 @@ def jaccard_loss(true, logits, eps=1e-7):
     The Jaccard loss
     """
     num_classes = logits.shape[1]
+    true = true.to(logits.device)
     if num_classes == 1:
-        true_1_hot = torch.eye(num_classes + 1)[true.squeeze(1)]
+        true_1_hot = torch.eye(num_classes + 1).to(true.device)[true.squeeze(1)]
         true_1_hot = torch.moveaxis(true_1_hot, -1, 1)
         true_1_hot_f = true_1_hot[:, 0:1, :, :]  # background
         true_1_hot_s = true_1_hot[:, 1:2, :, :]  # foreground
@@ -28,6 +29,7 @@ def jaccard_loss(true, logits, eps=1e-7):
         pos_prob = torch.sigmoid(logits)
         neg_prob = 1 - pos_prob
         probas = torch.cat([pos_prob, neg_prob], dim=1)
+        
     else:
         true_1_hot = torch.eye(num_classes)[true.squeeze(1)]
         true_1_hot = torch.moveaxis(true_1_hot, -1, 1)  # B, C, H, W
@@ -53,8 +55,10 @@ def loss_calc(pred, label, gpu=0, jaccard=False):
     Returns:
 
     """
-    label = Variable(label.long()).to(gpu)
-    criterion = nn.CrossEntropyLoss().to(gpu)
+    label = label.long()
+    if label.device != pred.device:
+        label = label.to(pred.device)
+    criterion = nn.CrossEntropyLoss().to(pred.device)
     loss = criterion(pred, label)
     if jaccard:
         loss = loss + jaccard_loss(true=label, logits=pred)
