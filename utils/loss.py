@@ -31,7 +31,7 @@ def jaccard_loss(true, logits, eps=1e-7):
         probas = torch.cat([pos_prob, neg_prob], dim=1)
         
     else:
-        true_1_hot = torch.eye(num_classes)[true.squeeze(1)]
+        true_1_hot = torch.eye(num_classes).to(true.device)[true.squeeze(1)]
         true_1_hot = torch.moveaxis(true_1_hot, -1, 1)  # B, C, H, W
         probas = F.softmax(logits, dim=1)
     true_1_hot = true_1_hot.type(logits.type())
