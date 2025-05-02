@@ -1,5 +1,5 @@
 # %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/utils/loss.py
-# import torch
+import torch
 from torch.nn import functional as F
 from torch.autograd import Variable
 import torch.nn as nn
