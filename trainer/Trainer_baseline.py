@@ -1,4 +1,4 @@
-# %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer_baseline.py
+%%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer_baseline.py
 from datetime import datetime
 import os
 import numpy as np
@@ -20,6 +20,7 @@ from trainer.Trainer import Trainer
 class Trainer_baseline(Trainer):
     def __init__(self):
         super().__init__()
+ 
 
     def add_additional_arguments(self):
         """
@@ -41,6 +42,8 @@ class Trainer_baseline(Trainer):
         self.parser.add_argument('-estop', help='if apply early stop', action='store_true')
         self.parser.add_argument('-stop_epoch', type=int, default=200,
                                  help='The number of epochs as the tolerance to stop the training.')
+        
+        
 
     @timer.timeit
     def get_arguments_apdx(self):
@@ -71,7 +74,8 @@ class Trainer_baseline(Trainer):
             if self.args.raw:
                 from pathlib import Path
                 print(f"DEBUG: self.args.data_dir being passed to prepare_dataset_mmwhs_raw is: {self.args.data_dir}")
-                self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_mmwhs'))
+                # self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_mmwhs'))
+                self.args.data_dir = str(Path(self.args.data_dir))
                 self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs_raw(self.args)
             else:
                 self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs(self.args)
