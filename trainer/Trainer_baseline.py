@@ -1,4 +1,4 @@
-%%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer_baseline.py
+# %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer_baseline.py
 from datetime import datetime
 import os
 import numpy as np
