@@ -66,7 +66,7 @@ class Trainer_MCCL(Trainer_RAIN):
                                  type=float, default=0.99)
         self.parser.add_argument('-thd_w', help='The weight for the adaptive threshold.', type=float,
                                  default=config.WEIGHT_THD)
-        self.parser.add_argument('-part', help='number of partitions to split decoder_ft', type=int, default=1)
+        self.parser.add_argument('-part', help='number of partitions to split decoder_ft', type=int, default=2)
         self.parser.add_argument('-wtd_ave',
                                  help='Whether to calculated the weighted average of the features or the "global" '
                                       'average of the features as the centroids.', action='store_true')
