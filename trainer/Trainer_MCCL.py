@@ -41,7 +41,7 @@ class Trainer_MCCL(Trainer_RAIN):
         self.parser.add_argument('-clbg', help='whether to include background in contrastive loss', action='store_true')
         self.parser.add_argument('-phead', help='whether to include projection head', action='store_true')
         self.parser.add_argument('-seg_pseudo', help='whether to include pseudo segmentation loss', action='store_true')
-        self.parser.add_argument('-tau', help='The temperature value for the contrastive loss', type=float, default=5.)
+        self.parser.add_argument('-tau', help='The temperature value for the contrastive loss', type=float, default=0.1)
         # self.parser.add_argument('-clwn', help='Whether to use norm as the denominator in the contrastive loss',
         #                     action='store_true')
         self.parser.add_argument("-ctd_mmt", type=float, default=0.95, help='The momentum of the source centroid.')

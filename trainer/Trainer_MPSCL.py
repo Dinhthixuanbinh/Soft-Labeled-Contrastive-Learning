@@ -26,18 +26,18 @@ class Trainer_MPSCL(Trainer_Advent):
         super(Trainer_MPSCL, self).add_additional_arguments()
         self.parser.add_argument('-adjust_lr', action='store_true')
 
-        self.parser.add_argument('-src_temp', type=float, default=1)
+        self.parser.add_argument('-src_temp', type=float, default=0.1)
         self.parser.add_argument('-src_base_temp', type=float, default=1)
-        self.parser.add_argument('-trg_temp', type=float, default=1)
+        self.parser.add_argument('-trg_temp', type=float, default=0.1)
         self.parser.add_argument('-trg_base_temp', type=float, default=1)
         self.parser.add_argument('-src_margin', type=float, default=.4)
         self.parser.add_argument('-trg_margin', type=float, default=.2)
 
-        self.parser.add_argument('-class_center_m', type=float, default=.2)
+        self.parser.add_argument('-class_center_m', type=float, default=0.9)
         self.parser.add_argument('-pixel_sel_th', type=float, default=.25)
 
-        self.parser.add_argument('-w_mpcl_s', type=float, default=1)
-        self.parser.add_argument('-w_mpcl_t', type=float, default=.1)
+        self.parser.add_argument('-w_mpcl_s', type=float, default=1.0)
+        self.parser.add_argument('-w_mpcl_t', type=float, default=1.0)
 
         self.parser.add_argument('-dis_type', type=str, default='origin')
 
