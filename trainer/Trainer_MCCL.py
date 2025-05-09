@@ -44,7 +44,7 @@ class Trainer_MCCL(Trainer_RAIN):
         self.parser.add_argument('-tau', help='The temperature value for the contrastive loss', type=float, default=0.1)
         # self.parser.add_argument('-clwn', help='Whether to use norm as the denominator in the contrastive loss',
         #                     action='store_true')
-        self.parser.add_argument("-ctd_mmt", type=float, default=0.95, help='The momentum of the source centroid.')
+        self.parser.add_argument("-ctd_mmt", type=float, default=0.9, help='The momentum of the source centroid.')
         self.parser.add_argument('-inter_w', help='the weight for the inter contrastive loss', type=float,
                                  default=config.WEIGHT_INTER_LOSS)
         self.parser.add_argument('-intra', help='Whether to apply intra contrastive loss.', action='store_true')

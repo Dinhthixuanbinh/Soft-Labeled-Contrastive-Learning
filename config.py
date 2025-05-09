@@ -1,6 +1,6 @@
 import numpy as np
 
-MODEL = 'dr_unet'
+MODEL = 'resnet50'
 BATCH_SIZE = 16
 EVAL_BS = 32
 NUM_WORKERS = 8
@@ -11,7 +11,7 @@ NUM_CLASSES = 4
 SAVE_PRED_EVERY = 50
 
 # Hyper Paramters
-WEIGHT_DECAY = 0.0005
+WEIGHT_DECAY = 0.0001
 LEARNING_RATE = 0.02 
 LEARNING_RATE_DECAY = 2e-3
 LEARNING_RATE_EPS = 20
@@ -22,7 +22,7 @@ RANDOM_SEED = 1234
 INPUT_SIZE = 224
 DATA_DIRECTORY = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
 RAW_DATA_DIRECTORY = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
-EPOCHS = 40
+EPOCHS = 200
 WARMUP_EPOCHS = EPOCHS
 EPS_ITERS = 5
 

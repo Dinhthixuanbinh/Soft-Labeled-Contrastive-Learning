@@ -225,7 +225,7 @@ def loss_class_prior(pred, prior, w, device):
     return loss.sum()
 
 
-def exp_func(v1, v2, tau=5):
+def exp_func(v1, v2, tau=0.1):
     h = torch.exp((torch.matmul(v1, v2) / tau))
     return h
 
