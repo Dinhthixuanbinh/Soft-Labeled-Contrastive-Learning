@@ -3,6 +3,7 @@ from datetime import datetime
 import os
 import numpy as np
 from tqdm import tqdm
+import argparse # Added import for BooleanOptionalAction
 
 import torch
 
@@ -20,7 +21,11 @@ from trainer.Trainer import Trainer
 class Trainer_baseline(Trainer):
     def __init__(self):
         super().__init__()
- 
+        # # Alternative method to default train_with_s to True if not specified:
+        # if not self.args.train_with_s and not self.args.train_with_t:
+        #      print("Defaulting to train_with_s=True as no domain specified.")
+        #      self.args.train_with_s = True
+
 
     def add_additional_arguments(self):
         """
@@ -29,8 +34,13 @@ class Trainer_baseline(Trainer):
         """
 
         """dataset configuration"""
+        # --- MODIFICATION START ---
+        # Original: self.parser.add_argument("-train_with_s", action='store_true')
+        # Changed to default to True if no flag is given (--train_with_s or --no-train_with_s)
+        # Requires Python 3.9+
+        self.parser.add_argument("-train_with_s", default=True, action=argparse.BooleanOptionalAction)
+        # --- MODIFICATION END ---
         self.parser.add_argument("-train_with_t", action='store_true')
-        self.parser.add_argument("-train_with_s", action='store_true')
         """evaluation configuration"""
         self.parser.add_argument("-eval_bs", type=int, default=config.EVAL_BS,
                                  help="Number of images sent to the network in a batch during evaluation.")
@@ -42,18 +52,18 @@ class Trainer_baseline(Trainer):
         self.parser.add_argument('-estop', help='if apply early stop', action='store_true')
         self.parser.add_argument('-stop_epoch', type=int, default=200,
                                  help='The number of epochs as the tolerance to stop the training.')
-        
-        
+
 
     @timer.timeit
     def get_arguments_apdx(self):
         """
         :return:
         """
+        # This assertion should now pass if you run without flags, as train_with_s defaults to True
         assert self.args.train_with_s or self.args.train_with_t, "at least train on one domain."
 
         super(Trainer_baseline, self).get_basic_arguments_apdx(name='Base')
-        self.apdx += f".bs{self.args.bs}"
+        self.apdx += f".bs{self.args.bs}" # Note: Default BS comes from Trainer.py/config.py
         self.apdx += '.trainW'
         if self.args.train_with_s:
             self.apdx += 's'
@@ -236,7 +246,7 @@ class Trainer_baseline(Trainer):
                 self.opt.zero_grad()
                 img_s, labels_s, names = batch_content
                 img_s, labels_s = img_s.to(self.device, non_blocking=self.args.pin_memory), labels_s.to(self.device,
-                                                                                                        non_blocking=self.args.pin_memory)
+                                                                                                       non_blocking=self.args.pin_memory)
 
                 out = self.segmentor(img_s)
                 pred = out[0] if type(out) == tuple else out
@@ -256,7 +266,7 @@ class Trainer_baseline(Trainer):
                 if self.args.save_data:
                     save_batch_data(self.args.data_dir, img_t.numpy(), labels_t.numpy(), namet, self.args.normalization, self.args.aug_mode)
                 img_t, labels_t = img_t.to(self.device, non_blocking=self.args.pin_memory), labels_t.to(self.device,
-                                                                                                        non_blocking=self.args.pin_memory)
+                                                                                                       non_blocking=self.args.pin_memory)
 
                 out = self.segmentor(img_t)
                 pred = out[0] if type(out) == tuple else out
