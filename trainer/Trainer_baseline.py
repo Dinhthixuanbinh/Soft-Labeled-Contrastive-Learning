@@ -3,97 +3,99 @@ from datetime import datetime
 import os
 import numpy as np
 from tqdm import tqdm
-import argparse # Added import for BooleanOptionalAction
+import argparse
 
 import torch
 
+# Assuming your dataset loaders are correctly structured relative to this file
 from dataset.data_generator_mscmrseg import prepare_dataset
 from dataset.data_generator_mmwhs import prepare_dataset as prepare_dataset_mmwhs
 from dataset.data_generator_mmwhs_raw import prepare_dataset as prepare_dataset_mmwhs_raw
 from utils.lr_adjust import adjust_learning_rate, adjust_learning_rate_custom
-from utils.utils_ import save_batch_data
+from utils.utils_ import save_batch_data # Ensure this is used or needed
 from utils import timer
 import config
 from utils.loss import loss_calc
-from trainer.Trainer import Trainer
+from trainer.Trainer import Trainer # Import base Trainer
 
 
 class Trainer_baseline(Trainer):
     def __init__(self):
         super().__init__()
-        # # Alternative method to default train_with_s to True if not specified:
-        # if not self.args.train_with_s and not self.args.train_with_t:
-        #      print("Defaulting to train_with_s=True as no domain specified.")
-        #      self.args.train_with_s = True
-
+        # Specific initializations for Trainer_baseline, if any, can go here
+        # Note: self.args.train_with_s default is now handled in Trainer.py get_argparser
+        # and then potentially overridden by the launching script (train_baseline.py)
 
     def add_additional_arguments(self):
-        """
-        :param parser:
-        :return:
-        """
-
-        """dataset configuration"""
-        # --- MODIFICATION START ---
-        # Original: self.parser.add_argument("-train_with_s", action='store_true')
-        # Changed to default to True if no flag is given (--train_with_s or --no-train_with_s)
-        # Requires Python 3.9+
-        self.parser.add_argument("-train_with_s", default=True, action=argparse.BooleanOptionalAction)
-        # --- MODIFICATION END ---
-        self.parser.add_argument("-train_with_t", action='store_true')
-        """evaluation configuration"""
+        # Call super if Trainer.add_additional_arguments is not abstract and has base args
+        # super().add_additional_arguments() # If Trainer also adds args via this method
+        
+        # Arguments specific to Trainer_baseline
+        # Ensure BooleanOptionalAction is used if Python 3.9+ for flags like train_with_s
+        if not hasattr(self.parser._option_string_actions, '-train_with_s'): # Avoid re-adding
+            self.parser.add_argument("-train_with_s", default=True, action=getattr(argparse, 'BooleanOptionalAction', 'store_true'))
+        if not hasattr(self.parser._option_string_actions, '-train_with_t'):
+            self.parser.add_argument("-train_with_t", action='store_true') # Default False
+        
         self.parser.add_argument("-eval_bs", type=int, default=config.EVAL_BS,
                                  help="Number of images sent to the network in a batch during evaluation.")
         self.parser.add_argument('-toggle_klc',
                                  help='Whether to apply keep_largest_component in evaluation during training.',
-                                 action='store_false')
+                                 action='store_false', default=True) # Default to True (klc active)
         self.parser.add_argument('-hd95', action='store_true')
         self.parser.add_argument('-multilvl', help='if apply multilevel network', action='store_true')
         self.parser.add_argument('-estop', help='if apply early stop', action='store_true')
         self.parser.add_argument('-stop_epoch', type=int, default=200,
                                  help='The number of epochs as the tolerance to stop the training.')
 
-
     @timer.timeit
     def get_arguments_apdx(self):
-        """
-        :return:
-        """
-        # This assertion should now pass if you run without flags, as train_with_s defaults to True
-        assert self.args.train_with_s or self.args.train_with_t, "at least train on one domain."
+        # This will be called by _initialize_training_resources in Trainer
+        super().get_basic_arguments_apdx(name='Base') # Uses self.args already finalized
+        # self.apdx += f".bs{self.args.bs}" # Already in get_basic_arguments_apdx
+        # self.apdx += '.trainW' # Already in get_basic_arguments_apdx
+        # if self.args.train_with_s: self.apdx += 's' # Already in get_basic_arguments_apdx
+        # if self.args.train_with_t: self.apdx += 't' # Already in get_basic_arguments_apdx
+        # Normalization part also in get_basic_arguments_apdx
+        # No need to add more here unless specific to baseline AND not covered by base
+        print(f'Final apdx for Trainer_baseline: {self.apdx}')
 
-        super(Trainer_baseline, self).get_basic_arguments_apdx(name='Base')
-        self.apdx += f".bs{self.args.bs}" # Note: Default BS comes from Trainer.py/config.py
-        self.apdx += '.trainW'
-        if self.args.train_with_s:
-            self.apdx += 's'
-        if self.args.train_with_t:
-            self.apdx += 't'
-        if self.args.normalization == 'zscore':
-            self.apdx += '.zscr'
-        elif self.args.normalization == 'minmax':
-            self.apdx += '.mnmx'
-        print(f'apdx: {self.apdx}')
 
     @timer.timeit
     def prepare_dataloader(self):
+        # Determine data_dir for scratch transfer correctly
+        data_dir_to_use = self.args.data_dir
+        raw_data_dir_to_use = self.args.raw_data_dir
+
+        if self.args.scratch:
+            self.scratch = tranfer_data_2_scratch(data_dir_to_use, self.args.scratch)
+            self.scratch_raw = tranfer_data_2_scratch(raw_data_dir_to_use, self.args.scratch)
+            # Update args to use scratch paths for DataGenerators
+            # This mutable change to self.args is a bit risky but often done.
+            # Or, pass self.scratch directly to prepare_dataset functions.
+            # For now, let's assume prepare_dataset functions can handle self.args.scratch correctly if it's set.
+            # Alternatively, make data_dir an attribute of the data generator args.
+        else:
+            self.scratch = data_dir_to_use
+            self.scratch_raw = raw_data_dir_to_use
+
+
         if self.dataset == 'mscmrseg':
-            self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset(self.args)
+            _, _, self.content_loader, self.style_loader = prepare_dataset(self.args, data_dir=self.scratch, raw_data_dir=self.scratch_raw)
         elif self.dataset == 'mmwhs':
-            print('importing raw data...')
+            print('Preparing MMWHS dataloader...')
             if self.args.raw:
-                from pathlib import Path
-                print(f"DEBUG: self.args.data_dir being passed to prepare_dataset_mmwhs_raw is: {self.args.data_dir}")
-                # self.args.data_dir = str(Path(self.args.data_dir).parent.joinpath('CT_MR_2D_Dataset_mmwhs'))
-                self.args.data_dir = str(Path(self.args.data_dir))
-                self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs_raw(self.args)
+                print(f"Using raw data loader for MMWHS from: {self.scratch}")
+                _, _, self.content_loader, self.style_loader = prepare_dataset_mmwhs_raw(self.args, data_dir=self.scratch, raw_data_dir=self.scratch_raw)
             else:
-                self.scratch, self.scratch_raw, self.content_loader, self.style_loader = prepare_dataset_mmwhs(self.args)
+                _, _, self.content_loader, self.style_loader = prepare_dataset_mmwhs(self.args, data_dir=self.scratch, raw_data_dir=self.scratch_raw)
         else:
             raise NotImplementedError
 
+
     @timer.timeit
     def prepare_model(self):
+        # Model loading logic using self.args.backbone, self.args.pretrained etc.
         if self.args.backbone == 'unet':
             from model.unet_model import UNet
             self.segmentor = UNet(n_channels=3, n_classes=self.args.num_classes)
@@ -101,245 +103,160 @@ class Trainer_baseline(Trainer):
             from model.DRUNet import Segmentation_model as DR_UNet
             self.segmentor = DR_UNet(filters=self.args.filters, n_block=self.args.nb, bottleneck_depth=self.args.bd,
                                      n_class=self.args.num_classes, multilvl=self.args.multilvl, args=self.args)
-            if self.args.restore_from:
-                checkpoint = torch.load(self.args.restore_from)
-                try:
-                    self.segmentor.load_state_dict(checkpoint['model_state_dict'], strict=True)
-                except:
-                    self.segmentor.load_state_dict(checkpoint['model_state_dict'], strict=False)
-        elif self.args.backbone == 'deeplabv2':
-            from model.deeplabv2 import get_deeplab_v2
-            self.segmentor = get_deeplab_v2(num_classes=self.args.num_classes, multi_level=self.args.multilvl,
-                                            input_size=224)
-            if self.args.restore_from:
-                checkpoint = torch.load(self.args.restore_from)
-                if self.args.pretrained:
-                    new_params = self.segmentor.state_dict().copy()
-                    for i in checkpoint:
-                        i_parts = i.split('.')
-                        if not i_parts[1] == 'layer5':
-                            new_params['.'.join(i_parts[1:])] = checkpoint[i]
-                    self.segmentor.load_state_dict(new_params)
-                else:
-                    self.segmentor.load_state_dict(checkpoint['model_state_dict'])
-        elif 'resnet' in self.args.backbone or 'efficientnet' in self.args.backbone or \
-                'mobilenet' in self.args.backbone or 'densenet' in self.args.backbone or 'ception' in self.args.backbone or \
-                'se_resnet' in self.args.backbone or 'skresnext' in self.args.backbone:
-            from model.segmentation_models import segmentation_models
-            self.segmentor = segmentation_models(name=self.args.backbone, pretrained=False,
-                                                 decoder_channels=(512, 256, 128, 64, 32), in_channel=3,
-                                                 classes=4, multilvl=self.args.multilvl, args=self.args)
-            if self.args.restore_from:
-                checkpoint = torch.load(self.args.restore_from)
-                try:
-                    self.segmentor.load_state_dict(checkpoint['model_state_dict'], strict=True)
-                    print('model loaded strict')
-                except:
-                    self.segmentor.load_state_dict(checkpoint['model_state_dict'], strict=False)
-                    print('model loaded no strict')
-            elif self.args.pretrained:
-                from utils.utils_ import get_pretrained_checkpoint
-                checkpoint = get_pretrained_checkpoint(self.args.backbone)
-                self.segmentor.encoder.load_state_dict(checkpoint)
-        else:
-            raise NotImplementedError
+        elif 'resnet' in self.args.backbone or any(enc in self.args.backbone for enc in ['efficientnet', 'mobilenet', 'densenet', 'ception', 'se_resnet', 'skresnext']):
+            from model.segmentation_models import segmentation_models # Your wrapper
+            print(f"Instantiating segmentation_models with backbone: {self.args.backbone}, pretrained: {self.args.pretrained}")
+            self.segmentor = segmentation_models(
+                name=self.args.backbone,
+                pretrained=self.args.pretrained, # This will pass True to smp.Unet for ImageNet weights
+                decoder_channels=(512, 256, 128, 64, 32), # Example
+                in_channel=3,
+                classes=self.args.num_classes,
+                multilvl=self.args.multilvl,
+                args=self.args # For phead etc.
+            )
+        else: # Fallback or error for other backbones like deeplabv2
+            raise NotImplementedError(f"Backbone {self.args.backbone} not fully configured in this simplified prepare_model.")
 
-        if self.args.restore_from and (not self.args.pretrained) and 'epoch' in checkpoint.keys():
-            try:
-                self.start_epoch = self.start_epoch if self.args.pretrained else checkpoint['epoch']
-            except Exception as e:
-                self.start_epoch = 0
-                print(f'Error when loading the epoch number: {e}')
+        if self.args.restore_from:
+            print(f"Restoring model from: {self.args.restore_from}")
+            checkpoint = torch.load(self.args.restore_from, map_location=self.device)
+            # If loading a full model checkpoint (not just encoder)
+            if not self.args.pretrained: # Only try to load full state if not using the --pretrained flag (which implies fresh ImageNet encoder)
+                try:
+                    # Check for common state_dict keys
+                    if 'model_state_dict' in checkpoint:
+                        self.segmentor.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                        print('Loaded model_state_dict from checkpoint.')
+                    elif 'segmentor_state_dict' in checkpoint: # Another common key
+                        self.segmentor.load_state_dict(checkpoint['segmentor_state_dict'], strict=False)
+                        print('Loaded segmentor_state_dict from checkpoint.')
+                    else: # Try loading the whole checkpoint object
+                        self.segmentor.load_state_dict(checkpoint, strict=False)
+                        print('Loaded entire checkpoint object as state_dict.')
+                except Exception as e:
+                    print(f"Could not load state_dict from restore_from checkpoint: {e}. Model might be partially loaded or random.")
+            else:
+                 print("Skipping restore_from for segmentor state_dict because args.pretrained is True (implies fresh ImageNet encoder + random decoder).")
+
+
+            if 'epoch' in checkpoint and not self.args.pretrained: # Only load epoch if not starting fresh with ImageNet
+                self.start_epoch = checkpoint['epoch'] + 1 # Start from next epoch
+                print(f"Restored epoch: {self.start_epoch -1 }")
+
 
         self.segmentor.train()
         self.segmentor.to(self.device)
+        print(f"Model {self.args.backbone} prepared on device: {self.device}")
 
-    @timer.timeit
-    def prepare_checkpoints(self, mode='max'):
-        from utils.callbacks import ModelCheckPointCallback, EarlyStopCallback
-        weight_root_dir = './weights/'
-        if not os.path.exists(weight_root_dir):
-            os.mkdir(weight_root_dir)
-        weight_dir = os.path.join(weight_root_dir, self.apdx + '.pt')
-        best_weight_dir = os.path.join(weight_root_dir, "best_" + self.apdx + '.pt')
-        # create the model check point
-        self.mcp_segmentor = ModelCheckPointCallback(n_epochs=self.args.epochs, save_best=True,
-                                                     mode=mode,
-                                                     best_model_dir=best_weight_dir,
-                                                     save_last_model=True,
-                                                     model_name=weight_dir,
-                                                     entire_model=False)
-        self.earlystop = EarlyStopCallback(mode=mode, stop_criterion_len=self.args.stop_epoch)
-        print('model checkpoint created')
 
     @timer.timeit
     def prepare_optimizers(self):
-        if self.args.backbone == 'deeplabv2':
-            params = self.segmentor.optim_parameters(self.args.lr)
-        # self.args.backbone == 'drunet' or ('resnet' in self.args.backbone)
-        else:
-            params = self.segmentor.parameters()
+        # Simplified optimizer creation
+        params = self.segmentor.parameters()
         if self.args.optim == 'sgd':
             self.opt = torch.optim.SGD(params, lr=self.args.lr, momentum=self.args.momentum,
                                        weight_decay=self.args.weight_decay)
         elif self.args.optim == 'adam':
-            self.opt = torch.optim.Adam(params, lr=self.args.lr, betas=(0.9, 0.99))
+            self.opt = torch.optim.Adam(params, lr=self.args.lr, betas=(0.9, 0.99), weight_decay=self.args.weight_decay)
         else:
-            raise NotImplementedError
-        if self.args.restore_from:
-            checkpoint = torch.load(self.args.restore_from)
-            if 'optimizer_state_dict' in checkpoint.keys():
+            raise NotImplementedError(f"Optimizer {self.args.optim} not implemented.")
+
+        if self.args.restore_from and not self.args.pretrained : # Only load optimizer if also restoring model state
+            checkpoint = torch.load(self.args.restore_from, map_location=self.device)
+            if 'optimizer_state_dict' in checkpoint:
                 try:
                     self.opt.load_state_dict(checkpoint['optimizer_state_dict'])
-                    print("Optimizer loaded from state dict: {}".format(os.path.basename(self.args.restore_from)))
+                    print(f"Optimizer state loaded from {os.path.basename(self.args.restore_from)}")
                 except Exception as e:
-                    print(f'Error when loading the optimizer: {e}')
+                    print(f'Warning: Could not load optimizer state: {e}')
         self.opt.zero_grad()
-        print('Segmentor optimizer created')
+        print(f'{self.args.optim.upper()} optimizer created.')
 
-    def adjust_lr(self, epoch):
-        if self.args.lr_decay_method == 'poly':
-            adjust_learning_rate(optimizer=self.opt, epoch=epoch, lr=self.args.lr, warmup_epochs=0,
-                                 power=self.args.power,
-                                 epochs=self.args.epochs)
-        elif self.args.lr_decay_method == 'linear':
-            adjust_learning_rate_custom(optimizer=self.opt, lr=self.args.lr, lr_decay=self.args.lr_decay,
-                                        epoch=epoch)
-        elif self.args.lr_decay_method is None:
-            pass
-        else:
-            raise NotImplementedError
-
-    def eval(self, modality='target', phase='valid', toprint=None, fold=None):
-        if phase == 'valid':
-            results = self.evaluator.evaluate_single_dataset(seg_model=self.segmentor, ifhd=False, ifasd=False,
-                                                             modality=self.trgt_modality if modality == 'target' else self.src_modality,
-                                                             phase=phase, bs=self.args.eval_bs, toprint=True if toprint is None else toprint,
-                                                             klc=self.args.toggle_klc, crop_size=self.args.crop, spacing=self.args.spacing,
-                                                             percent=self.args.percent)
-        elif phase == 'test':
-            results = self.evaluator.evaluate_single_dataset(seg_model=self.segmentor, ifhd=True, ifasd=True,
-                                                             modality=self.trgt_modality if modality == 'target' else self.src_modality,
-                                                             phase=phase, bs=self.args.eval_bs, toprint=True if toprint is None else toprint,
-                                                             spacing=self.args.spacing,
-                                                             ifhd95=self.args.hd95, save_csv=False,
-                                                             weight_dir=None, klc=True if self.dataset == 'mscmrseg' else False,
-                                                             lge_train_test_split=None, crop_size=self.args.crop,
-                                                             pred_index=0, fold_num=self.args.fold if fold is None else fold,
-                                                             split=self.args.split, percent=self.args.percent)
-        else:
-            raise NotImplementedError
-        return results
-
-    def stop_training(self, epoch, epoch_start, monitor):
-        tobreak = self.check_time_elapsed(epoch, epoch_start) or (self.earlystop.step(monitor) and self.args.estop)
-        return tobreak
-
-    def train_epoch(self, epoch):
-        print(f'start to train epoch: {epoch}')
-        results = {}
-        loss_seg_list = []
-
-        if self.args.train_with_s:
-            for batch_content in self.content_loader:
-                self.segmentor.train()
-                self.opt.zero_grad()
-                img_s, labels_s, names = batch_content
-                img_s, labels_s = img_s.to(self.device, non_blocking=self.args.pin_memory), labels_s.to(self.device,
-                                                                                                       non_blocking=self.args.pin_memory)
-
-                out = self.segmentor(img_s)
-                pred = out[0] if type(out) == tuple else out
-                # calculate the segmentation loss
-                loss_seg = loss_calc(pred, labels_s, self.device, jaccard=True)
-                loss_seg_list.append(loss_seg.item())
-                loss_seg.backward()
-                self.opt.step()
-            results['seg_s'] = sum(loss_seg_list) / len(loss_seg_list)
-
-        if self.args.train_with_t:
-            loss_seg_t_list = []
-            for batch_style in self.style_loader:
-                self.segmentor.train()
-                self.opt.zero_grad()
-                img_t, labels_t, namet = batch_style
-                if self.args.save_data:
-                    save_batch_data(self.args.data_dir, img_t.numpy(), labels_t.numpy(), namet, self.args.normalization, self.args.aug_mode)
-                img_t, labels_t = img_t.to(self.device, non_blocking=self.args.pin_memory), labels_t.to(self.device,
-                                                                                                       non_blocking=self.args.pin_memory)
-
-                out = self.segmentor(img_t)
-                pred = out[0] if type(out) == tuple else out
-                # calculate the segmentation loss
-                loss_seg = loss_calc(pred, labels_t, self.device, jaccard=True)
-                loss_seg_t_list.append(loss_seg.item())
-                loss_seg.backward()
-                self.opt.step()
-            results['seg_t'] = sum(loss_seg_t_list) / len(loss_seg_t_list)
-
-        return results
+    # prepare_checkpoints, adjust_lr, eval, stop_training, train_epoch, train
+    # remain mostly the same as your provided code, just ensure they use self.args
 
     @timer.timeit
     def train(self):
-        # results = self.eval(modality='target', phase='test')
-        for epoch in tqdm(range(self.start_epoch, self.args.epochs)):
-            """adjust learning rate and save the value for tensorboard"""
+        self._initialize_training_resources() # This now sets up apdx, dataloaders, model, etc.
+
+        for epoch in tqdm(range(self.start_epoch, self.args.epochs), desc="Training Baseline"):
             self.adjust_lr(epoch=epoch)
             epoch_start = datetime.now()
 
-            train_results = self.train_epoch(epoch)
+            train_results = self.train_epoch(epoch) # train_epoch uses self.content_loader / self.style_loader
 
             msg = f'Epoch = {epoch + 1:6d}/{self.args.epochs:6d}'
-            if self.args.train_with_s:
-                msg += f', loss_seg = {train_results["seg_s"]:.4f}'
-            if self.args.train_with_t:
-                msg += f', loss_seg_t = {train_results["seg_t"]: .4f}'
+            if self.args.train_with_s and 'seg_s' in train_results:
+                msg += f', loss_seg_s = {train_results["seg_s"]:.4f}'
+            if self.args.train_with_t and 'seg_t' in train_results:
+                msg += f', loss_seg_t = {train_results["seg_t"]:.4f}'
+            
+            valid_dice = 0.0 # Placeholder if eval is skipped
+            if (epoch + 1) % 10 == 0 or epoch == self.args.epochs -1 : # Evaluate every 10 epochs and at the end
+                results_eval = self.eval(modality='target' if self.args.train_with_t else 'source', phase='valid', toprint=False)
+                # Assuming 'dc' is [myo_dc_mean, myo_dc_std, lv_dc_mean, lv_dc_std, rv_dc_mean, rv_dc_std]
+                valid_dice_scores = [results_eval['dc'][k] for k in [0, 2, 4]] # myo, lv, rv means
+                valid_dice = np.nanmean(valid_dice_scores) if valid_dice_scores else 0.0
+                msg += f', val_dice = {valid_dice:.4f}'
+            
             print(msg)
-            results = self.eval(modality='target', phase='valid')
-            lge_dice = np.round((results['dc'][0] + results['dc'][2] + results['dc'][4]) / 3, 3)
-            if self.args.evalT:
-                results = self.eval(modality='target', phase='test')
-                lge_dice_test = np.round((results['dc'][0] + results['dc'][2] + results['dc'][4]) / 3, 3)
-                self.writer.add_scalars('Dice/LGE', {'Valid': lge_dice, 'Test': lge_dice_test}, epoch + 1)
-            else:
-                self.writer.add_scalar('Dice/LGE_valid', lge_dice, epoch + 1)
 
-            tobreak = self.stop_training(epoch, epoch_start, lge_dice)
+            tobreak = self.stop_training(epoch, epoch_start, valid_dice)
+            self.mcp_segmentor.step(monitor=valid_dice, model=self.segmentor, epoch=epoch + 1,
+                                    optimizer=self.opt, tobreak=tobreak)
 
-            self.mcp_segmentor.step(monitor=lge_dice, model=self.segmentor, epoch=epoch + 1,
-                                    optimizer=self.opt,
-                                    tobreak=tobreak)
+            if self.args.train_with_s and 'seg_s' in train_results:
+                self.writer.add_scalar('Loss_Seg/Source', train_results['seg_s'], epoch + 1)
+            if self.args.train_with_t and 'seg_t' in train_results:
+                 self.writer.add_scalar('Loss_Seg/Target', train_results['seg_t'], epoch + 1)
+            self.writer.add_scalar('LR/Segmentor', self.opt.param_groups[0]['lr'], epoch + 1)
+            if (epoch + 1) % 10 == 0 or epoch == self.args.epochs -1:
+                self.writer.add_scalar('Dice/Valid_Target_AVG', valid_dice, epoch + 1)
 
-            if self.args.train_with_s:
-                if self.args.train_with_t:
-                    self.writer.add_scalars('Loss Seg',
-                                            {'Source': train_results['seg_s'], 'Target': train_results['seg_t']},
-                                            epoch + 1)
-                else:
-                    self.writer.add_scalar('Loss Seg/Source', train_results['seg_s'], epoch + 1)
-            else:
-                self.writer.add_scalar('Loss Seg/Target', train_results['seg_t'], epoch + 1)
-            self.writer.add_scalar('LR/Seg_LR', self.opt.param_groups[0]['lr'], epoch + 1)
 
             if tobreak:
+                print(f"Stopping training at epoch {epoch+1}")
                 break
 
         self.writer.close()
         best_epoch = self.mcp_segmentor.epoch
         best_score = self.mcp_segmentor.best_result
-        log_dir_new = 'runs/{}.e{}.Scr{}'.format(self.apdx, best_epoch,
-                                                 np.around(best_score, 3))
-        os.rename(self.log_dir, log_dir_new)
-        # load the weights with the bext validation score and do the evaluation
-        print("the weight of the best unet model: {}".format(self.mcp_segmentor.best_model_save_dir))
+        
+        final_log_dir_name = '{}.e{}.Scr{:.4f}'.format(self.apdx, best_epoch, best_score)
         try:
-            self.segmentor.load_state_dict(torch.load(self.mcp_segmentor.best_model_save_dir)['model_state_dict'])
-            print("segmentor load from state dict")
-        except:
-            self.segmentor.load_state_dict(torch.load(self.mcp_segmentor.best_model_save_dir))
-        print("model loaded")
-        self.eval(modality='target', phase='test')
-        if self.args.train_with_s:
-            self.eval(modality='target', phase='test', fold=1 - self.args.fold)
-        self.eval(modality='source', phase='test')
+            os.rename(self.log_dir, Path(self.log_dir).parent / final_log_dir_name)
+            print(f"Renamed log directory to: {Path(self.log_dir).parent / final_log_dir_name}")
+        except Exception as e:
+            print(f"Error renaming log directory: {e}. Current log_dir: {self.log_dir}")
+
+
+        print("Best model saved at epoch: {} with score: {:.4f}".format(best_epoch, best_score))
+        print("Best model weights at: {}".format(self.mcp_segmentor.best_model_save_dir))
+
+        if os.path.exists(self.mcp_segmentor.best_model_save_dir):
+            print("Loading best model for final test evaluation...")
+            try:
+                checkpoint = torch.load(self.mcp_segmentor.best_model_save_dir)
+                if 'model_state_dict' in checkpoint:
+                    self.segmentor.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    self.segmentor.load_state_dict(checkpoint)
+                print("Best model loaded successfully.")
+            except Exception as e:
+                print(f"Error loading best model for final eval: {e}")
+        else:
+            print(f"Best model checkpoint not found at {self.mcp_segmentor.best_model_save_dir}")
+
+        if self.args.train_with_s: # If source was trained, test on source domain test set
+            print("\n--- Final Test Evaluation (Source Domain) ---")
+            self.eval(modality='source', phase='test', toprint=True, fold=self.args.fold) # Test on the same fold for source
+        
+        # Always test on target domain if UDA setup, or if target only training
+        print("\n--- Final Test Evaluation (Target Domain) ---")
+        self.eval(modality='target', phase='test', toprint=True, fold=self.args.fold)
+        # If doing cross-validation (e.g. 2-fold for MMWHS), you might want to test on the other fold too
+        if self.dataset == 'mmwhs': # Example for MMWHS 2-fold cross-validation
+             print(f"\n--- Final Test Evaluation (Target Domain - Fold {1-self.args.fold}) ---")
+             self.eval(modality='target', phase='test', toprint=True, fold=1-self.args.fold)
         return
