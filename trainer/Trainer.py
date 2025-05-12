@@ -1,3 +1,4 @@
+# %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/trainer/Trainer.py
 import torch.backends.cudnn as cudnn
 import torch
 
@@ -23,23 +24,16 @@ class Trainer(ABC):
         self.prepare_grocery()
         self.cores = os.cpu_count()
 
-        self.get_argparser()
-        self.get_arguments_apdx()
+        self.get_argparser() # Parses args and sets defaults
+
+        # APDX and writer will be initialized in train() after potential args overrides
+        self.apdx = None
+        self.writer = None
+        self.log_dir = None
 
         self.args.num_workers = min(self.cores, self.args.bs) if self.args.num_workers == -1 else self.args.num_workers
-        self.prepare_dataloader()
-        self.prepare_model()
-        self.prepare_optimizers()
-        self.prepare_checkpoints()
-        self.prepare_losses()
-        random.seed(self.args.seed)
-        np.random.seed(self.args.seed)
-        torch.manual_seed(self.args.seed)
-        torch.cuda.manual_seed(self.args.seed)
-        self.writer, self.log_dir = get_summarywriter(self.apdx)
-        """create the evaluator"""
-        self.evaluator = Evaluator(data_dir=self.scratch, raw_data_dir=self.scratch_raw, raw=self.args.raw,
-                                   normalization=self.args.normalization, dataset=self.dataset)
+        # Dataloader, model, optimizers, checkpoints, losses will be prepared after apdx is set
+        # and after potential args overrides from specific trainer scripts
 
     def get_argparser(self):
         # Basic options
@@ -50,7 +44,7 @@ class Trainer(ABC):
         self.parser.add_argument('-val_num', type=int, default=0)
         """dataset configuration"""
         self.parser.add_argument('-spacing', help='pixel spacing of the mmwhs dataset', type=float, default=1)
-        self.parser.add_argument('-noM3AS', action='store_false')
+        self.parser.add_argument('-noM3AS', action='store_false', default=True) # Default noM3AS to True (meaning M3AS is disabled)
         self.parser.add_argument('-data_dir', type=str, default=config.DATA_DIRECTORY)
         self.parser.add_argument("-raw_data_dir", type=str, default=config.RAW_DATA_DIRECTORY,
                                  help="Path to the directory containing the source dataset.")
@@ -71,7 +65,7 @@ class Trainer(ABC):
         self.parser.add_argument("-percent", type=float, default=100)
         self.parser.add_argument("-save_data", action='store_true')
         """model configuration"""
-        self.parser.add_argument("-backbone", help='the model for training.', type=str, default='resnet50')
+        self.parser.add_argument("-backbone", help='the model for training.', type=str, default='resnet50') # MODIFIED DEFAULT
         self.parser.add_argument("-pretrained", action='store_true',
                                  help="whether the loaded model is pretrained (the epoch number will not be loaded if True).")
         self.parser.add_argument("-restore_from", type=str, default=None,
@@ -79,11 +73,11 @@ class Trainer(ABC):
         self.parser.add_argument("-num_classes", type=int, default=config.NUM_CLASSES,
                                  help="Number of classes to predict (including background).")
         self.parser.add_argument("-nb", type=int, default=4,
-                                 help="Number of blocks.")
+                                 help="Number of blocks (for DRUNet).")
         self.parser.add_argument("-bd", type=int, default=4,
-                                 help="Bottleneck depth.")
+                                 help="Bottleneck depth (for DRUNet).")
         self.parser.add_argument("-filters", type=int, default=32,
-                                 help="Number of filters for the first layer.")
+                                 help="Number of filters for the first layer (for DRUNet).")
         """optimization options"""
         self.parser.add_argument('-optim', help='The optimizer.', type=str, default='sgd')
         self.parser.add_argument('-lr_decay_method', type=str, default=None)
@@ -96,7 +90,6 @@ class Trainer(ABC):
                                  help="Decay parameter to compute the learning rate.")
         self.parser.add_argument("-weight_decay", type=float, default=config.WEIGHT_DECAY,
                                  help="Regularisation parameter for L2-loss.")
-        # parser.add_argument('-ns', type=int, default=700)
         self.parser.add_argument('-epochs', type=int, default=config.EPOCHS)
         """weight directory"""
         self.parser.add_argument('-vgg', help='the path to the directory of the weight', type=str,
@@ -109,34 +102,41 @@ class Trainer(ABC):
         self.parser.add_argument("-seed", type=int, default=config.RANDOM_SEED,
                                  help="Random seed to have reproducible results.")
         self.add_additional_arguments()
-        self.args = self.parser.parse_args()
-        self.args.raw = True
-        del self.parser
-        self.args.spacing = .5 if 'DDFSeg' in self.args.data_dir else 1
-        if 'mscmrseg' in self.args.data_dir:
+        self.args = self.parser.parse_args([]) # Use empty list for notebooks if not passing cmd args
+
+        if 'mmwhs' in self.args.data_dir.lower(): # Ensure raw is True for mmwhs
+            self.args.raw = True
+
+        # Store parser to allow child classes to add their specific arguments BEFORE full parsing
+        # del self.parser # Don't delete yet if child classes use it
+        
+        # Determine dataset and modalities based on data_dir
+        if 'mscmrseg' in self.args.data_dir.lower():
             self.dataset = 'mscmrseg'
             self.trgt_modality = 'bssfp' if self.args.rev else 'lge'
             self.src_modality = 'lge' if self.args.rev else 'bssfp'
-        elif 'mmwhs' in self.args.data_dir:
+        elif 'mmwhs' in self.args.data_dir.lower():
             self.dataset = 'mmwhs'
             self.trgt_modality = 'ct' if self.args.rev else 'mr'
             self.src_modality = 'ct' if not self.args.rev else 'mr'
         else:
-            raise NotImplementedError
+            raise NotImplementedError(f"Dataset not recognized from data_dir: {self.args.data_dir}")
+        self.args.spacing = .5 if 'DDFSeg' in self.args.data_dir else 1
+
 
     @abstractmethod
-    def add_additional_arguments(self):
+    def add_additional_arguments(self): # To be implemented by child classes
         pass
 
     def get_basic_arguments_apdx(self, name):
         self.apdx = f"{name}.{self.dataset}.s{self.args.split}.f{self.args.fold}.v{self.args.val_num}.{self.args.backbone}"
-        if not self.args.noM3AS:
+        if hasattr(self.args, 'noM3AS') and not self.args.noM3AS: # check attribute existence
             self.apdx += '.noM3AS'
-        if self.args.apdx != '':
+        if hasattr(self.args, 'apdx') and self.args.apdx != '': # check attribute existence
             self.apdx += f'.{self.args.apdx}'
         if self.args.backbone == 'drunet':
             self.apdx += f".{self.args.filters}.nb{self.args.nb}.bd{self.args.bd}"
-        if self.args.clahe:
+        if getattr(self.args, 'clahe', False):
             self.apdx += '.clahe'
         self.apdx += f'.lr{self.args.lr}'
         if self.args.lr_decay_method is not None:
@@ -163,11 +163,12 @@ class Trainer(ABC):
                 self.apdx += 'Sim'
             elif '2' in self.args.aug_mode:
                 self.apdx += 'Hvy2'
-            else:
-                self.apdx += 'Hvy'
+            elif self.args.aug_mode == 'heavy':
+                 self.apdx += 'Hvy'
+
 
     @abstractmethod
-    def get_arguments_apdx(self):
+    def get_arguments_apdx(self): # This will be implemented by specific trainers like Trainer_MCCL
         self.apdx = ''
 
     @abstractmethod
@@ -191,15 +192,35 @@ class Trainer(ABC):
         print_device_info()
         cudnn.benchmark = True
         cudnn.enabled = True
-        torch.autograd.set_detect_anomaly(True)
 
     @abstractmethod
     def train_epoch(self, **kwargs):
         pass
 
     @abstractmethod
-    def train(self, **kwargs):
+    def train(self, **kwargs): # The actual train method will be in child classes
+        # --- MOVED FROM __INIT__ ---
+        self.get_arguments_apdx() # Call specific trainer's apdx generation
+        self.writer, self.log_dir = get_summarywriter(self.apdx)
+        self.prepare_dataloader() # Now called after args are fully set
+        self.prepare_model()
+        self.prepare_optimizers()
+        self.prepare_checkpoints()
+        self.prepare_losses()
+        random.seed(self.args.seed)
+        np.random.seed(self.args.seed)
+        torch.manual_seed(self.args.seed)
+        torch.cuda.manual_seed(self.args.seed)
+        
+        if not hasattr(self, 'evaluator'): # Ensure evaluator is initialized if not already
+            self.evaluator = Evaluator(data_dir=self.scratch if hasattr(self, 'scratch') else self.args.data_dir,
+                                       raw_data_dir=self.scratch_raw if hasattr(self, 'scratch_raw') else self.args.raw_data_dir,
+                                       raw=self.args.raw,
+                                       normalization=self.args.normalization,
+                                       dataset=self.dataset)
+        # --- END MOVED BLOCK ---
         pass
+
 
     def check_time_elapsed(self, epoch, epoch_start, margin=30 * 60):
         epoch_time_elapsed = datetime.now() - epoch_start
