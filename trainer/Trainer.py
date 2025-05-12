@@ -71,7 +71,7 @@ class Trainer(ABC):
         self.parser.add_argument("-percent", type=float, default=100)
         self.parser.add_argument("-save_data", action='store_true')
         """model configuration"""
-        self.parser.add_argument("-backbone", help='the model for training.', type=str, default='drunet')
+        self.parser.add_argument("-backbone", help='the model for training.', type=str, default='resnet50')
         self.parser.add_argument("-pretrained", action='store_true',
                                  help="whether the loaded model is pretrained (the epoch number will not be loaded if True).")
         self.parser.add_argument("-restore_from", type=str, default=None,
