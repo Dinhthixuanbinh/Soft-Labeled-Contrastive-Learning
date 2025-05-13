@@ -8,30 +8,37 @@ from datetime import datetime
 import numpy as np
 import pandas as pd
 import cv2
-import sys
+import sys 
 import os
 import re
 import nibabel as nib
-from skimage import measure
-from kornia.contrib import connected_components
+from skimage import measure # Ensure skimage.measure is imported
 import argparse
 from pathlib import Path
 from glob import glob
-from utils import timer
+# Assuming timer.py is in utils directory or accessible via 'from utils import timer'
+# If timer is a sibling file: import timer
+# If utils is a package and timer is a module in it: from . import timer
+# Based on your project structure, utils is a package.
+from utils import timer 
+
 import SimpleITK as sitk
 from easydict import EasyDict
 
-from utils.callbacks import ModelCheckPointCallback
-import config
+from utils.callbacks import ModelCheckPointCallback # Assuming callbacks.py is in utils
+import config # Assuming config.py is at the project root
 
 
 def print_device_info():
-    print("Device name: {}".format(torch.cuda.get_device_name(0)))
-    print("torch version: {}".format(torch.__version__))
-    print("device count: {}".format(torch.cuda.device_count()))
-    print('device name: {}'.format(torch.cuda.get_device_name(0)))
+    if torch.cuda.is_available():
+        print("Device name: {}".format(torch.cuda.get_device_name(0)))
+        print("torch version: {}".format(torch.__version__))
+        print("device count: {}".format(torch.cuda.device_count()))
+        # The following line is redundant if the first one works.
+        # print('device name: {}'.format(torch.cuda.get_device_name(0))) 
+    else:
+        print("CUDA is not available. Using CPU.")
     print(f'Number of cores: {os.cpu_count()}')
-
 
 def get_device():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -40,28 +47,26 @@ def get_device():
 
 def get_summarywriter(log_subdir=''):
     from torch.utils.tensorboard import SummaryWriter
-    log_dir = 'runs/{}'.format(log_subdir)
-    if Path(log_dir).exists():
+    # Ensure 'runs' directory exists
+    base_runs_dir = Path('runs')
+    base_runs_dir.mkdir(parents=True, exist_ok=True)
+    
+    log_dir_path = base_runs_dir / log_subdir
+    
+    # Check if the exact log_subdir path exists. If so, append timestamp.
+    # This prevents errors if a non-timestamped log_subdir is re-used.
+    if log_dir_path.exists() and not any(char.isdigit() for char in log_dir_path.name.split('.')[-1]): # Heuristic for non-timestamped
         now = datetime.now()
-        log_dir = log_dir + ".{}.{}".format(now.hour, now.minute)
-    writer = SummaryWriter(log_dir=log_dir)
-    return writer, log_dir
+        # Append timestamp to the *specific subdirectory name*, not the whole path string
+        log_dir_path = base_runs_dir / f"{log_subdir}.{now.strftime('%H.%M.%S')}" # More unique timestamp
+        
+    log_dir_path.mkdir(parents=True, exist_ok=True) # Ensure it exists before writer uses it
+    
+    writer = SummaryWriter(log_dir=str(log_dir_path))
+    return writer, str(log_dir_path)
 
 
 def load_nii(img_path):
-    """
-    Function to load a 'nii' or 'nii.gz' file.
-
-    Parameters
-    ----------
-
-    img_path: string
-    String with the path of the 'nii' or 'nii.gz' image file name.
-
-    Returns
-    -------
-    a numpy array of the image values, the affine transformation of the image, the header of the image.
-    """
     nimg = nib.load(img_path)
     return nimg.get_fdata(), nimg.affine, nimg.header
 
@@ -72,14 +77,18 @@ def read_img(pat_id, img_len, file_path='../processed/', modality='lge'):
         folder = 'testA' if pat_id < 6 else 'trainA'
     else:
         folder = 'testB' if pat_id < 6 else 'trainB'
-    modality = 'bSSFP' if modality == 'bssfp' else 'lge'
-    for im in range(img_len):
-        img = cv2.imread(os.path.join(file_path, "{}/pat_{}_{}_{}.png".format(folder, pat_id, modality, im)))
+    modality_str = 'bSSFP' if modality == 'bssfp' else 'lge' # Renamed variable
+    for im_idx in range(img_len): # Renamed variable
+        img_full_path = os.path.join(file_path, "{}/pat_{}_{}_{}.png".format(folder, pat_id, modality_str, im_idx))
+        img = cv2.imread(img_full_path)
+        if img is None:
+            print(f"Warning: Could not read image {img_full_path}")
+            continue
         images.append(img)
     return np.array(images)
 
 
-def keep_largest_connected_components(mask, channel_first=True, num_channel=None):
+def keep_largest_connected_components(mask, num_total_classes):
     """
     Keeps only the largest connected components of each label for a segmentation mask.
     Args:
@@ -90,29 +99,30 @@ def keep_largest_connected_components(mask, channel_first=True, num_channel=None
     Returns:
 
     """
-    assert mask.ndim == 3 or mask.ndim == 4, 'The shape of the mask should be either (bs, h, w) or (bs, c, h, w) or ' \
-                                             '(bs ,h, w, c)'
-    if num_channel is None:
-        if mask.ndim == 3:
-            num_channel = len(np.unique(mask))
-        elif mask.ndim == 4:
-            num_channel = mask.shape[1] if channel_first else mask.shape[-1]
-    out_img = np.zeros(mask.shape, dtype=np.uint8)
-    for struc_id in range(1, num_channel + 1):
-        binary_img = mask == struc_id
-        blobs = measure.label(binary_img, connectivity=1)
-        props = measure.regionprops(blobs)
-        if not props:
-            continue
-        area = [ele.area for ele in props]
-        largest_blob_ind = np.argmax(area)
-        largest_blob_label = props[largest_blob_ind].label
+    if mask.ndim == 2: # This line should have the first level of indent within the function
+        out_img = np.zeros_like(mask, dtype=mask.dtype)
+        # Iterate through foreground classes (assuming class 0 is background)
+        for struc_id in range(1, num_total_classes): # Processes classes 1, 2, ..., num_total_classes-1
+            binary_img_slice = (mask == struc_id)
+            if np.sum(binary_img_slice) > 0: # Check if the class exists in the mask
+                blobs = measure.label(binary_img_slice, connectivity=1) # Find connected components
+                props = measure.regionprops(blobs)
+                if not props: # No components found
+                    continue
+                
+                areas = [ele.area for ele in props]
+                if not areas: continue # Should not happen if props is not empty
 
-        out_img[blobs == largest_blob_label] = struc_id
-
-    return out_img
-
-
+                largest_blob_ind = np.argmax(areas)
+                largest_blob_label = props[largest_blob_ind].label
+                
+                out_img[blobs == largest_blob_label] = struc_id
+        return out_img
+    else:
+        # If you need to support batched or channel-first 3D/4D masks, add specific logic here.
+        # For now, this function is tailored for the 2D `pred_slice` from evaluator.py
+        raise ValueError(f"keep_largest_connected_components expects a 2D mask (H,W), but got shape {mask.shape}")
+    # --- END CORRECTED INDENTATION ---
 def resize_volume(img_volume, w=288, h=288):
     """
     :param img_volume:
@@ -467,7 +477,7 @@ def check_bit_generator():
 
 
 def cal_centroid(decoder_ft, label, previous_centroid=None, momentum=0.95, pseudo_label=False, n_class=4, partition=1,
-                 threshold: int = None, thd_w: float = config.WEIGHT_THD, weighted_ave=False, epoch=0, max_epoch=1000,
+                 threshold: int = None, thd_w: float = 0.0, weighted_ave=False, epoch=0, max_epoch=1000, # Used config.WEIGHT_THD before
                  low_thd = 0, high_thd=0.99, stdmin=False):
     """
     For source samples, previous
@@ -486,144 +496,73 @@ def cal_centroid(decoder_ft, label, previous_centroid=None, momentum=0.95, pseud
     shape_ft = decoder_ft.size()
     shape_label = label.size()
     label_temp = label
-    if shape_label[-1] != shape_ft[-1] or shape_label[-2] != shape_ft[-2]:
-        if label.ndim == 3:
-            if shape_ft[-2] != label_temp.size()[-2] or shape_ft[-1] != label_temp.size()[-1]:
-                label_temp = torch.squeeze(
-                    F.interpolate(torch.unsqueeze(label_temp, dim=1), (shape_ft[-2], shape_ft[-1]),
-                                  mode='nearest'), dim=1)
-        elif label.ndim == 4:
-            if shape_ft[-2] != label_temp.size()[-2] or shape_ft[-1] != label_temp.size()[-1]:
-                label_temp = F.interpolate(label_temp, (shape_ft[-2], shape_ft[-1]), align_corners=True,
-                                           mode='bilinear')
-    ratio = None
+    if not pseudo_label and (shape_label[-1] != shape_ft[-1] or shape_label[-2] != shape_ft[-2]):
+        if label.ndim == 3: label_temp = torch.unsqueeze(label_temp, dim=1)
+        label_temp = F.interpolate(label_temp.float(), size=(shape_ft[-2], shape_ft[-1]), mode='nearest').long()
+        label_temp = torch.squeeze(label_temp, dim=1)
+    if pseudo_label and (shape_label[-1] != shape_ft[-1] or shape_label[-2] != shape_ft[-2]):
+        if label.ndim == 3: raise ValueError("Soft pseudo-label must have channel dimension K")
+        label_temp = F.interpolate(label_temp, size=(shape_ft[-2], shape_ft[-1]), mode='bilinear', align_corners=False)
+    
+    ratio = None; stddevs = []; current_centroids_list = []
     stddevs = []  # bg, myo, lv, rv
     if pseudo_label:
-        pred_max = torch.max(label_temp, dim=1, keepdim=True).values  # (N, 1, 224 ,224)
-        pred_mask = torch.ones_like(pred_max)
-        # label_temp = label_temp  # (N, 4, 224, 224)
-        pred_onehot = torch.where(label_temp == pred_max, 1, 0)  # (N, 4, 224, 224) one hot encoded pseudo label
-        if threshold is not None:
-            assert ((-1 <= threshold <= 1) or (threshold == 2) or (threshold == 3) or
-                    (threshold == -2)), 'The threshold should between [-1, 1] U {-2, 2, 3}.'
-            if threshold == -1:  # only keep the largest component in the prediction mask
-                label_binary = torch.unsqueeze(torch.where(torch.argmax(label_temp, dim=1) > .5, 1, 0),
-                                               1).float()  # (N, 1, 224, 224) pseudo labels except the background
-                blobs = connected_components(label_binary.detach())  # (N, 1, 224, 224)
-                for i in range(len(blobs)):
-                    size_list = []
-                    for num_blob in (torch.unique(blobs[i])[1:].cpu().numpy()):
-                        size_list.append(int(torch.sum(torch.where(blobs[i] == num_blob, 1, 0)).cpu()))
-                    if len(size_list) == 0:
-                        continue
-                    num_largest_blob = torch.unique(blobs[i])[np.argmax(size_list) + 1]
-                    blobs[i] = torch.where(blobs[i] == num_largest_blob, 1, 0)
-                pred_mask = blobs
-            else:
-                """extract the max value among the 4 features of each feature vector (excluded background)"""
-                cardiac_mask = ~(pred_max == torch.unsqueeze(label_temp[:, 0], 1))
-                cardiac_coor = torch.where(cardiac_mask == 1)
-                """calculate the adaptive threshold with the weight thd_w. Default thd_w = 0."""
-                if threshold == 1:  # adaptive threshold
-                    """calculate the mean and std of the max values"""
-                    mean, std = torch.mean(pred_max[cardiac_coor]).detach().cpu().numpy(), torch.std(
-                        pred_max[cardiac_coor]).detach().cpu().numpy()
-                    threshold = float(np.clip(mean + thd_w * std, 0, 1))
-                if threshold == 3:  # select the features whose prediction is less than .6
-                    pred_mask = torch.where(pred_max <= .6, 1, 0)
-                elif threshold == 2:  # select the features whose prediction less than .4 or greater than .9
-                    pred_mask = torch.where(pred_max <= .4, 1, 0) | torch.where(pred_max >= .9, 1, 0)
-                elif threshold == -2:  # curriculum learning
-                    thd = max(high_thd * (1 - epoch / max_epoch), low_thd)
-                    pred_mask = torch.where(pred_max >= thd, 1, 0)
-                elif -1 < threshold < 0:
-                    if len(cardiac_coor) > 0:
-                        tmp = pred_max[cardiac_coor].flatten().sort().values  # ascending order (small -> large)
-                        threshold = tmp[int(-threshold * len(tmp))]
-                        pred_mask = torch.where(pred_max >= threshold, 1, 0)
-                    else:
-                        pred_mask = torch.zeros_like(pred_max)
-                else:
-                    # (N, 1, 224 ,224) find the pixels whose certainty is greater than the threshold
-                    pred_mask = torch.where(pred_max >= threshold, 1, 0)
-                ratio = pred_mask[cardiac_coor].sum() / (len(cardiac_coor[0]) + 1e-7)
-            # (N, 4, 224, 224) mask the pixels whose prediction is greater than the threshold
-            label_temp = label_temp * pred_mask
-        if partition == 1:
-            centroids = []
-            if weighted_ave:
-                for i in range(n_class):
-                    ft = decoder_ft * torch.unsqueeze(label_temp[:, i], 1)
-                    sum_i = (torch.sum(label_temp[:, i]) + 1e-7)
-                    centroid = torch.unsqueeze(torch.sum(ft, (0, 2, 3)) / sum_i, 0)
-                    centroids.append(centroid)
-                    if stdmin:
-                        stddev = torch.square((decoder_ft - centroid[:, :, None, None]))
-                        stddev = torch.sum(stddev * torch.unsqueeze(label_temp[:, i], 1), (0, 2, 3))
-                        stddevs.append(stddev.mean() / sum_i)
-            else:
-                for i in range(n_class):
-                    ft = decoder_ft * torch.unsqueeze(pred_onehot[:, i], 1) * pred_mask
-                    sum_i = torch.sum(torch.unsqueeze(pred_onehot[:, i], 1) * pred_mask)
-                    centroid = torch.unsqueeze(torch.sum(ft, (0, 2, 3)) / sum_i, 0)
-                    centroids.append(centroid)
-                    if stdmin:
-                        stddev = torch.square((decoder_ft - centroid[:, :, None, None]) * torch.unsqueeze(pred_onehot[:, i], 1) * pred_mask)
-                        stddevs.append(torch.sum(stddev, (0, 2, 3)).mean() / sum_i)
-            centroids = [torch.cat(centroids, dim=0)]
-        else:
-            size = label_temp.size()  # (N, 4, 224, 224)
-            centroids = []
-            for i in range(pred_onehot.size()[1]):
-                substds = []
-                indices_1 = torch.where(pred_onehot[:, i] == 1)
-                indices_1 = torch.stack(list(indices_1), dim=1)  # (M, 3)
-                len_1 = indices_1.size()[0]  # M
-                idx_split_1 = torch.tensor_split(torch.randperm(len_1), partition)
-                indices_0 = torch.where(pred_onehot[:, i] == 0)
-                indices_0 = torch.stack(list(indices_0), dim=1)  # (K, 3)
-                len_0 = indices_0.size()[0]  # K
-                idx_split_0 = torch.tensor_split(torch.randperm(len_0), partition)
-                partition_collector = []
-                for split_1, split_0 in zip(idx_split_1, idx_split_0):
-                    idx_1_part = indices_1[split_1, :]
-                    idx_0_part = indices_0[split_0, :]
-                    idx_part = torch.concat([idx_1_part, idx_0_part], dim=0).transpose(0, 1)
-                    idx_part = tuple(idx_part)
-                    mask = torch.zeros(size[0], size[2], size[3]).cuda()
-                    mask[idx_part] = 1
-                    mask = mask.unsqueeze(1)  # (N, 1, 224, 224) mask for one partition
-                    # mask = mask * pred_mask  # (N, 1, 224, 224) mask out the pixels under the specified certainty
-                    if weighted_ave:
-                        pred_max_select = label_temp[:, i][idx_part]
-                        centroid = torch.sum(decoder_ft * (torch.unsqueeze(label_temp[:, i], 1) * mask), (0, 2, 3)) \
-                                   / (torch.sum(pred_max_select) + 1e-7)
-                        if stdmin:
-                            stddev = torch.square((decoder_ft - centroid[None, :, None, None]) * mask)
-                            stddev = torch.sum(stddev * torch.unsqueeze(label_temp[:, i], 1), (0, 2, 3))
-                            substds.append(stddev.mean() / (torch.sum(pred_max_select) + 1e-7))
-                    else:
-                        ft_mask = torch.unsqueeze(pred_onehot[:, i], 1) * pred_mask * mask
-                        ft = decoder_ft * ft_mask
-                        sum_i = torch.sum(ft_mask)
-                        centroid = torch.sum(ft, (0, 2, 3)) / (sum_i + 1e-7)
-                        if stdmin:
-                            stddev = torch.square((decoder_ft - centroid[None, :, None, None]) * ft_mask)
-                            substds.append(torch.sum(stddev, (0, 2, 3)).mean() / sum_i)
-                    partition_collector.append(centroid)
-                partition_collector = torch.stack(partition_collector, dim=0)  # (P, 32)
-                centroids.append(partition_collector)
-            centroids = torch.stack(centroids, dim=1)  # (P, #cls, 32)
+            pred_onehot = F.one_hot(torch.argmax(label_temp, dim=1), num_classes=n_class).permute(0, 3, 1, 2).float()
+            pixel_certainty_mask = torch.ones_like(label_temp[:,0:1,:,:])
+            if threshold is not None:
+                pred_max_probs, _ = torch.max(label_temp, dim=1, keepdim=True)
+                if 0 < threshold < 1: pixel_certainty_mask = (pred_max_probs >= threshold).float()
+
+            for k_cls in range(n_class):
+                if weighted_ave:
+                    class_probs = label_temp[:, k_cls, :, :].unsqueeze(1) * pixel_certainty_mask
+                    weighted_ft = decoder_ft * class_probs
+                    sum_weighted_ft = torch.sum(weighted_ft, dim=(0, 2, 3))
+                    sum_weights = torch.sum(class_probs, dim=(0, 2, 3)).squeeze() + 1e-7
+                    centroid = sum_weighted_ft / sum_weights
+                    current_partition_centroids_list_inner.append(centroid.unsqueeze(0))
+                else: # hard pseudo labels
+                    class_mask_onehot = pred_onehot[:, k_cls, :, :].unsqueeze(1) * pixel_certainty_mask
+                    masked_ft = decoder_ft * class_mask_onehot
+                    sum_ft = torch.sum(masked_ft, dim=(0,2,3))
+                    num_pixels = torch.sum(class_mask_onehot, dim=(0,2,3)).squeeze() + 1e-7
+                    current_partition_centroids_list_inner.append((sum_ft / num_pixels).unsqueeze(0))
+            current_centroids_list.append(torch.cat(current_partition_centroids_list_inner, dim=0))
+
     else:
-        centroids = []
-        for i in range(n_class):
-            class_mask = torch.unsqueeze(torch.where(label_temp == i, 1, 0), 1)
-            ft = decoder_ft * class_mask
-            centroids.append(torch.unsqueeze(torch.sum(ft, (0, 2, 3)) / (torch.sum(class_mask) + 1e-7), 0))
-        centroids = torch.cat(centroids, dim=0)
+            current_partition_centroids_src = []
+            for k_cls in range(n_class):
+                class_mask = (label_temp == k_cls).unsqueeze(1).float()
+                masked_ft = decoder_ft * class_mask
+                sum_ft = torch.sum(masked_ft, dim=(0,2,3))
+                num_pixels = torch.sum(class_mask, dim=(0,2,3)).squeeze() + 1e-7
+                current_partition_centroids_src.append(sum_ft / num_pixels)
+            current_centroids_list.append(torch.stack(current_partition_centroids_src, dim=0))
+
+    final_centroids_stack = torch.stack(current_centroids_list, dim=0)
+    
+    if partition == 1 and pseudo_label:
+        final_centroids = final_centroids_stack.squeeze(0)
+    elif partition > 1 and pseudo_label:
+        final_centroids = [final_centroids_stack[p] for p in range(partition)] # Return list for partition > 1
+    else: # partition == 1 and not pseudo_label
+        final_centroids = final_centroids_stack.squeeze(0)
+
+
     if previous_centroid is not None:
-        centroids = momentum * previous_centroid + (1 - momentum) * centroids
-    return centroids, ratio, stddevs
+        # Handle EMA carefully if final_centroids is a list (for partition > 1)
+        if isinstance(final_centroids, list) and isinstance(previous_centroid, list) and len(final_centroids) == len(previous_centroid):
+            for i in range(len(final_centroids)):
+                if final_centroids[i].shape == previous_centroid[i].shape:
+                    final_centroids[i] = momentum * previous_centroid[i] + (1 - momentum) * final_centroids[i]
+                else:
+                    print(f"Warning: Shape mismatch in EMA for partition {i}")
+        elif isinstance(final_centroids, torch.Tensor) and isinstance(previous_centroid, torch.Tensor) and final_centroids.shape == previous_centroid.shape:
+             final_centroids = momentum * previous_centroid + (1 - momentum) * final_centroids
+        else:
+            print(f"Warning: Shape/type mismatch for EMA. Current type: {type(final_centroids)}, Prev type: {type(previous_centroid)}")
+            
+    return final_centroids, ratio, stddevs # stddevs needs to be computed if stdmin=True
 
 
 def update_class_center_iter(cla_src_feas, batch_src_labels, class_center_feas, m=.2, num_class=4):
@@ -817,32 +756,32 @@ def crop_normalize(img_style, img_s, normalization):
 
 
 def get_pretrained_checkpoint(backbone):
-    if backbone == 'resnet18':
-        checkpoint = torch.load('./pretrained/resnet18-5c106cde.pth')
-    elif backbone == 'resnet50':  # 43,888,708
-        checkpoint = torch.load('./pretrained/resnet50-19c8e357.pth')
-    elif backbone == 'resnet34':  # 29,942,596
-        checkpoint = torch.load('./pretrained/resnet34-333f7ec4.pth')
-    elif backbone == 'efficientnet-b6':  # 49,269,212
-        checkpoint = torch.load('./pretrained/efficientnet-b6-c76e70fd.pth')
-    elif backbone == 'efficientnet-b5':  # 36,445,748
-        checkpoint = torch.load('./pretrained/efficientnet-b5-b6417697.pth')
-    elif backbone == 'mobilenet_v2':  # 13,388,548
-        checkpoint = torch.load('./pretrained/mobilenet_v2-b0353104.pth')
-    elif backbone == 'densenet161':  # 53,359,172
-        checkpoint = torch.load('./pretrained/densenet161-347e6b360.pth')
-    elif backbone == 'inceptionv4':  # 58,795,556
-        checkpoint = torch.load('./pretrained/inceptionv4-8e4777a0.pth')
-    elif backbone == 'xception':  # 39,086,380
-        checkpoint = torch.load('./pretrained/xception-43020ad28.pth')
-    elif backbone == 'se_resnet50':  # 46,419,700
-        checkpoint = torch.load('./pretrained/se_resnet50-ce0d4300.pth')
-    elif backbone == 'se_resnet101':  # 67,658,548
-        checkpoint = torch.load('./pretrained/se_resnet101-7e38fcc6.pth')
-    elif backbone == 'timm-skresnext50_32x4d':  #
-        checkpoint = torch.load('./pretrained/skresnext50_ra-f40e40bf.pth')
-    else:
-        raise NotImplementedError
+    # --- UPDATE THIS PATH to your Kaggle dataset containing the .pth file ---
+    # Example: PRETRAINED_BASE_PATH = Path("/kaggle/input/my-resnet-weights/")
+    PRETRAINED_BASE_PATH = Path("/kaggle/input/resnet50-pytorch-pretrained/") # Make sure this dataset is added to your notebook
+    
+    WEIGHT_PATHS = {
+        'resnet50': PRETRAINED_BASE_PATH / 'resnet50-19c8e357.pth', # Ensure this filename matches your uploaded file
+        # Add other backbones if you have their weights locally
+    }
+    checkpoint_path = WEIGHT_PATHS.get(backbone)
+
+    if checkpoint_path is None:
+        # This case should ideally not be hit if Trainer_baseline.prepare_model calls this only for known backbones.
+        # If smp.Unet handles 'imagenet' download, this function's role is for *local* fallbacks or specific weights.
+        print(f"Warning: Pretrained weights for backbone '{backbone}' are not locally defined in WEIGHT_PATHS. Relaying on smp.Unet 'imagenet' download.")
+        return None # Allow smp.Unet to try downloading
+    
+    print(f"Attempting to load LOCAL pretrained weights for {backbone} from: {checkpoint_path}")
+    
+    if not checkpoint_path.exists():
+        print(f"ERROR: LOCAL Pretrained weights file not found at {checkpoint_path}!")
+        print("Ensure the Kaggle input dataset is correctly added and the path/filename is exact.")
+        print("Will rely on smp.Unet to download 'imagenet' weights if possible.")
+        return None # Allow smp.Unet to try downloading if local file is explicitly configured but not found
+        
+    checkpoint = torch.load(checkpoint_path, map_location=torch.device('cpu')) 
+    print(f"--- Successfully loaded LOCAL pretrained checkpoint for {backbone} from {checkpoint_path}. ---")
     return checkpoint
 
 
@@ -1138,15 +1077,23 @@ def load_model(model_dir, args=None):
     return segmentor
 
 
-def load_mnmx_csv(modality, percent=100):
-    if percent == 99:
-        mnmx = pd.read_csv(f'{modality.upper()}minmax99.csv', index_col=0)
-    elif percent == 99.99:
-        mnmx = pd.read_csv(f'{modality.upper()}minmax99.99.csv', index_col=0)
-    elif percent == 100:
-        mnmx = pd.read_csv(f'/kaggle/input/ctminmax100-csv/CTminmax100.csv', index_col=0)
-    else:
-        raise NotImplementedError(f"{sys._getframe(  ).f_code.co_name}, variable 'percent' out of expectation.")
+def load_mnmx_csv(modality, percent=99):
+    base_csv_path = Path("/kaggle/input/generate-normalization-stats/normalization_stats") # Your Kaggle Dataset path
+    percent_for_filename = int(float(percent))
+    csv_filename = f"{modality.upper()}minmax{percent_for_filename}.csv"
+    csv_file = base_csv_path / csv_filename
+    print(f"Attempting to load minmax CSV for modality '{modality}' with percent '{percent_for_filename}' from: {csv_file}")
+    if not csv_file.exists():
+        raise FileNotFoundError(f"Minmax CSV file not found: {csv_file}.")
+    mnmx = pd.read_csv(csv_file, index_col=0)
+    expected_min_col = f'min{percent_for_filename}'
+    expected_max_col = f'max{percent_for_filename}'
+    if not (expected_min_col in mnmx.columns and expected_max_col in mnmx.columns):
+        # Fallback for "min99" if using percent=99
+        if percent_for_filename == 99 and 'min99' in mnmx.columns and 'max99' in mnmx.columns:
+            print(f"Note: Using 'min99'/'max99' columns from {csv_file} as '{expected_min_col}'/'{expected_max_col}' not found.")
+        else:
+            raise ValueError(f"CSV file {csv_file} does not contain expected columns '{expected_min_col}' and '{expected_max_col}'. Found: {mnmx.columns.tolist()}")
     return mnmx
 
 
@@ -1350,13 +1297,4 @@ def Acc(plabel, label, num_cls=19):
 
 
 if __name__ == '__main__':
-    # from torch.nn.functional import softmax
-    #
-    # print('test cal_centroid!')
-    # decoder_ft = torch.randn(2, 32, 224, 224)
-    # prediction = torch.randn(2, 4, 224, 224)
-    # prediction = softmax(prediction, 1)
-    # centroids = cal_centroid(decoder_ft, prediction, pseudo_label=True, partition=2)
-    # find_class_prior_mscmrseg()
-    check_mask_with_label()
-    print('finish')
+    print('utils_.py finished its main block execution (if any).')

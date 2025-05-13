@@ -1,56 +1,55 @@
 # %%writefile /kaggle/working/Soft-Labeled-Contrastive-Learning/train_baseline.py
-from trainer.Trainer_baseline import Trainer_baseline
+import sys
+from pathlib import Path
 from datetime import datetime
-import argparse # Make sure argparse is imported
+import argparse
+
+# --- Add project root to Python path (CRITICAL: Should be at the very top) ---
+project_root_str = "/kaggle/working/Soft-Labeled-Contrastive-Learning"
+project_root = Path(project_root_str)
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root)) # Insert at the beginning of the path
+    print(f"Added {project_root} to sys.path from train_baseline.py")
+else:
+    print(f"{project_root} already in sys.path (train_baseline.py)")
+# --- End Add project root ---
+
+# Now import your project modules AFTER sys.path is set
+from trainer.Trainer_baseline import Trainer_baseline
+# config is imported within Trainer and DataGenerator, no need for explicit import here unless used directly
 
 def main():
     trainer_base = Trainer_baseline()
 
     # --- Hardcode Parameters for Source-Only CT Training ---
-    # This section overrides any command-line arguments or defaults from argparse
     print("--- WARNING: Hardcoding arguments for baseline source-only CT training ---")
 
-    # 1. Ensure Source Training is Enabled and Target is Disabled
-    #    (This overrides the edit made previously in Trainer_baseline.py's add_additional_arguments)
     trainer_base.args.train_with_s = True
     trainer_base.args.train_with_t = False
-
-    # 2. Set Fold (e.g., Fold 0 - change to 1 for the other fold)
     trainer_base.args.fold = 0
+    trainer_base.args.epochs = 200 # Example
+    trainer_base.args.raw = True   # MMWHS raw data loader
+    # trainer_base.args.backbone = 'resnet50' # This will be taken from Trainer.py default now
+    trainer_base.args.pretrained = True    # Enable ImageNet pretraining for the encoder
+    trainer_base.args.aug_s = True         # Enable source augmentation
+    trainer_base.args.aug_t = False        # No target augmentation for source-only baseline
+    trainer_base.args.aug_mode = 'simple'
+    trainer_base.args.lr = 0.0008      # Specific LR for this baseline run, if different from config/Trainer default
+    trainer_base.args.percent = 99.0
 
-    # 3. Set Epochs (Choose a suitable number, e.g., 200)
-    trainer_base.args.epochs = 200
+    # For MMWHS, ensure data_dir is set if not relying on config.py default in Trainer
+    trainer_base.args.data_dir = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
+    trainer_base.args.raw_data_dir = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
 
-    # 4. Enable Raw Data Loading (Crucial for CT-MR .nii files)
-    trainer_base.args.raw = True
 
-    # 5. Specify Backbone (e.g., ResNet50 as used in paper)
-    trainer_base.args.backbone = 'resnet50'
-
-    # 6. Verify Data Paths (Using defaults from config.py - ensure they are correct)
-    #    You could explicitly set them here if needed:
-    # trainer_base.args.data_dir = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
-    # trainer_base.args.raw_data_dir = "/kaggle/input/ct-mr-2d-dataset-da/CT_MR_2D_Dataset_mmwhs"
-
-    # 7. Batch Size (Using the default 16 from config.py as requested by user)
-    #    No override needed here if config.py BATCH_SIZE = 16
-
-    # 8. Learning Rate (Using the default 0.0008 from config.py after user edits)
-    #    No override needed here if config.py LEARNING_RATE = 0.0008
-
-    # Print the hardcoded values being used for verification
-    print(f"Hardcoded Fold: {trainer_base.args.fold}")
-    print(f"Hardcoded Epochs: {trainer_base.args.epochs}")
-    print(f"Hardcoded Raw: {trainer_base.args.raw}")
-    print(f"Hardcoded train_with_s: {trainer_base.args.train_with_s}")
-    print(f"Hardcoded train_with_t: {trainer_base.args.train_with_t}")
-    print(f"Hardcoded Backbone: {trainer_base.args.backbone}")
-    print(f"Using Data Directory: {trainer_base.args.data_dir}")
-    print(f"Using Batch Size: {trainer_base.args.bs}") # Will reflect value from config.py
-    print(f"Using Learning Rate: {trainer_base.args.lr}") # Will reflect value from config.py
+    # Print the final configuration that will be used AFTER Trainer init and these overrides
+    # The effective args will be used for apdx generation inside _initialize_training_resources
+    print(f"--- Intended args for baseline run (will be finalized in Trainer): ---")
+    temp_args_view = {k: v for k, v in vars(trainer_base.args).items() if not k.startswith('_')}
+    for arg_name, arg_val in sorted(temp_args_view.items()):
+        print(f"{arg_name}: {arg_val}")
     print("----------------------------------------------------")
-    # --- End Hardcoding ---
-
+    
     trainer_base.train()
 
 if __name__ == '__main__':
